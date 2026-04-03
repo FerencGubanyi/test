@@ -321,12 +321,12 @@ def run_training(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='BKK OD predikció training')
+    parser = argparse.ArgumentParser(description='BKK OD prediction training')
     parser.add_argument('--model',  type=str, default='gat',
                         choices=['gat', 'hypergraph'],
-                        help='Modell típusa (gat / hypergraph)')
+                        help='Modell type (gat / hypergraph)')
     parser.add_argument('--epochs', type=int, default=100,
-                        help='Training epochok száma')
+                        help='Number of training epoch')
     parser.add_argument('--lr',     type=float, default=1e-3,
                         help='Learning rate')
     args = parser.parse_args()

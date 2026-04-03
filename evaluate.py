@@ -127,7 +127,7 @@ def compute_metrics(pred_np, target_np):
 
 
 def evaluate_model(model_type, zone_ids, device):
-    """Model validation on S000144 scenario"""
+    """Model validation on bus35 scenario"""
     model, extra, in_ch, cfg = load_model(model_type, zone_ids, device)
     if model is None:
         return None
