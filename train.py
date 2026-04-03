@@ -259,7 +259,6 @@ def run_training(args):
         print(f'  - {s["name"]}')
     print(f'Validation: {val_scenario["name"]}')
 
-
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     criterion = nn.MSELoss()
