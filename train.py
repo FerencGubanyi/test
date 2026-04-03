@@ -79,8 +79,8 @@ def load_all_scenarios(zone_ids, device, in_channels):
     # M1 extension
     if os.path.exists(M1_KK) and m2_base is not None:
         try:
-            m1_kk   = load_od_matrix_sheet(M1_KK, 'kk')
-            m1_diff = load_od_matrix_sheet(M1_KK, 'dm-diff')
+            m1_kk   = load_od_matrix_sheet(M1_KK, 'KK')
+            m1_diff = load_od_matrix_sheet(M1_KK, 'DM-DIFF')
             # reindex if it is needed
             m1_kk   = m1_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             m1_diff = m1_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
@@ -102,8 +102,8 @@ def load_all_scenarios(zone_ids, device, in_channels):
     # 35-ös autóbusz
     if os.path.exists(BUS35_KK) and m2_base is not None:
         try:
-            bus_kk   = load_od_matrix_sheet(BUS35_KK, 'kk')
-            bus_diff = load_od_matrix_sheet(BUS35_KK, 'dm-diff')
+            bus_kk   = load_od_matrix_sheet(BUS35_KK, 'KK')
+            bus_diff = load_od_matrix_sheet(BUS35_KK, 'DM-DIFF')
             bus_kk   = bus_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             bus_diff = bus_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             scenarios.append({
@@ -247,25 +247,68 @@ def run_training(args):
     print(f'Validation: {val_scenario["name"]}')
 
     # Training 
-    # TODO: mini-batch training with more scenarios
-    train_data = train_scenarios[0].copy()
-    val_data   = val_scenario.copy()
+    train_scenarios = all_scenarios[:-1]
+    val_scenario    = all_scenarios[-1]
+    print(f'\nTraining scenarios ({len(train_scenarios)}):')
+    for s in train_scenarios:
+        print(f'  - {s["name"]}')
+    print(f'Validation: {val_scenario["name"]}')
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    criterion = nn.MSELoss()
+
+    best_val_loss    = float('inf')
+    patience_counter = 0
     if args.model == 'gat':
-        train_data['edge_index'] = edge_index
-        val_data['edge_index']   = edge_index
+        for s in train_scenarios + [val_scenario]:
+            s['edge_index'] = edge_index
 
-    history = train(
-        model      = model,
-        cfg        = cfg,
-        train_data = train_data,
-        val_data   = val_data,
-        save_path  = save_path
-    )
+    for epoch in range(args.epochs):
+        # for all of the scenarios
+        model.train()
+        epoch_losses = []
+        for s in train_scenarios:
+            optimizer.zero_grad()
+            if args.model == 'gat':
+                pred = model(s['x_seq'], s['edge_index'], s['scenario_feat'])
+            else:
+                pred = model(s['x_seq'], s['scenario_feat'])
+            loss = criterion(pred, s['target'])
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            epoch_losses.append(loss.item())
 
-    print(f'\n✅ Training done!')
-    print(f'   Checkpoint: {save_path}')
-    print(f'   Best val loss: {min(history["val_loss"]):.4f}')
+        train_loss = np.mean(epoch_losses)
+
+        # validation
+        model.eval()
+        with torch.no_grad():
+            if args.model == 'gat':
+                val_pred = model(val_scenario['x_seq'], val_scenario['edge_index'], val_scenario['scenario_feat'])
+            else:
+                val_pred = model(val_scenario['x_seq'], val_scenario['scenario_feat'])
+            val_loss = criterion(val_pred, val_scenario['target']).item()
+            val_mae  = F.l1_loss(val_pred, val_scenario['target']).item()
+
+        scheduler.step(val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss    = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), save_path)
+            print(f'  Epoch {epoch+1:3d} | Train: {train_loss:.4f} | Val: {val_loss:.4f} | MAE: {val_mae:.4f} ✅')
+        else:
+            patience_counter += 1
+            if epoch % 10 == 0:
+                print(f'  Epoch {epoch+1:3d} | Train: {train_loss:.4f} | Val: {val_loss:.4f}')
+
+        if patience_counter >= 15:
+            print(f'Early stopping — {epoch+1} epoch')
+            break
+
+    print(f'\n✅ Done | Best val loss: {best_val_loss:.4f} | Checkpoint: {save_path}')
 
 
 if __name__ == '__main__':
