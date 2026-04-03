@@ -5,15 +5,15 @@
 
 ```
 bkk_thesis/
-├── config/paths.py          # elérési utak (Colab + lokális)
+├── config/paths.py         
 ├── models/
-│   ├── gat_lstm.py          # GAT+LSTM architektúra
-│   └── hypergraph_lstm.py   # Hypergraph+LSTM architektúra
+│   ├── gat_lstm.py         
+│   └── hypergraph_lstm.py   
 ├── utils/
-│   ├── data.py              # adat betöltés, feature engineering
-│   └── synthetic_scenarios.py  # szintetikus scenarió generátor
-├── train.py                 # training futtatása
-└── evaluate.py              # kiértékelés, összehasonlítás
+│   ├── data.py              
+│   └── synthetic_scenarios.py
+├── train.py                
+└── evaluate.py             
 ```
 
 ---
@@ -22,8 +22,8 @@ bkk_thesis/
 
 ### Google Colab
 ```python
-!git clone https://github.com/FELHASZNALONEV/bkk_thesis.git
-%cd bkk_thesis
+!git clone https://github.com/username/test.git
+%cd test
 !pip install -r requirements.txt
 
 from google.colab import drive
