@@ -41,7 +41,7 @@ def load_all_scenarios(zone_ids, device, in_channels):
     print('\nLoad real scenarios...')
 
     # M2 extension
-    if os.path.exists(M2_BASE_KK) and os.path.exists(M2_DEV_KK):
+    if not os.path.exists(M2_BASE_KK) and os.path.exists(M2_DEV_KK):
         m2_base = load_od_matrix_with_header(M2_BASE_KK)
         m2_dev  = load_od_matrix_with_header(M2_DEV_KK)
         m2_diff = m2_dev - m2_base
@@ -62,7 +62,7 @@ def load_all_scenarios(zone_ids, device, in_channels):
         m2_base = None
 
     # S000144
-    if os.path.exists(S144_BASE_KK) and os.path.exists(S144_DIFF_KK) and m2_base is not None:
+    if not os.path.exists(S144_BASE_KK) and os.path.exists(S144_DIFF_KK) and m2_base is not None:
         s144_base = load_od_matrix_no_header(S144_BASE_KK, zone_ids)
         s144_diff = load_od_matrix_no_header(S144_DIFF_KK, zone_ids)
         scenarios.append({
@@ -79,7 +79,7 @@ def load_all_scenarios(zone_ids, device, in_channels):
         print(f'  ✅ S000144')
 
     # M1 extension
-    if os.path.exists(M1_KK) and m2_base is not None:
+    if not os.path.exists(M1_KK) and m2_base is not None:
         try:
             m1_kk   = load_od_matrix_with_header(M1_KK)
             m1_diff = load_od_matrix_with_header(M1_DIFF_KK)
@@ -268,7 +268,11 @@ def run_training(args):
     if args.model == 'gat':
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
-
+    print('NaN check:')
+    for s in train_scenarios[:3]:
+        for i, x in enumerate(s['x_seq']):
+            print(f"  {s['name']} x_seq[{i}]: nan={x.isnan().any()}, inf={x.isinf().any()}")
+        print(f"  target: nan={s['target'].isnan().any()}, inf={s['target'].isinf().any()}")
     for epoch in range(args.epochs):
         # for all of the scenarios
         model.train()
