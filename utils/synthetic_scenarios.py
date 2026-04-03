@@ -105,10 +105,17 @@ class SyntheticScenarioGenerator:
         return self.rng.choice(within, size=min(n, len(within)), replace=False)
 
     def _enforce_conservation(self, delta: np.ndarray) -> np.ndarray:
-        """Forgalommegmaradás: a teljes nettó változás közel nulla legyen."""
+        """
+        Forgalommegmaradás — csak a már nem-nulla cellákban korrigál,
+        nem szórja szét az egész mátrixra.
+        """
         total = delta.sum()
-        if abs(total) > 0.01:
-            delta -= total / (self.n * self.n)
+        nonzero_mask = np.abs(delta) > 1e-6
+        n_nonzero = nonzero_mask.sum()
+        
+        if abs(total) > 0.01 and n_nonzero > 0:
+            delta[nonzero_mask] -= total / n_nonzero
+        
         return delta
 
     def generate_bus_new(self, scenario_id: int,
