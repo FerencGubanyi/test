@@ -259,13 +259,6 @@ def run_training(args):
         print(f'  - {s["name"]}')
     print(f'Validation: {val_scenario["name"]}')
 
-    # Training 
-    train_scenarios = all_scenarios[:-1]
-    val_scenario    = all_scenarios[-1]
-    print(f'\nTraining scenarios ({len(train_scenarios)}):')
-    for s in train_scenarios:
-        print(f'  - {s["name"]}')
-    print(f'Validation: {val_scenario["name"]}')
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
