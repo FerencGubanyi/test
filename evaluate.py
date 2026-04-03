@@ -19,7 +19,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 from config.paths import (
-    BASE_DIR, ZONES_SHP, GTFS_ZIP,
+    BASE_DIR, BUS35_DIFF_KK, BUS35_KK, ZONES_SHP, GTFS_ZIP,
     M2_BASE_KK, M2_DEV_KK,
     S144_BASE_KK, S144_DIFF_KK,
     GAT_CHECKPOINT, HG_CHECKPOINT
@@ -133,17 +133,19 @@ def evaluate_model(model_type, zone_ids, device):
         return None
 
     m2_base  = load_od_matrix_with_header(M2_BASE_KK)
-    s144_base = load_od_matrix_no_header(S144_BASE_KK, zone_ids)
-    s144_diff = load_od_matrix_no_header(S144_DIFF_KK, zone_ids)
+    bus_kk   = load_od_matrix_with_header(BUS35_KK)
+    bus_diff = load_od_matrix_with_header(BUS35_DIFF_KK)
+    bus_kk   = bus_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
+    bus_diff = bus_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
 
     x_seq = [
         od_matrix_to_zone_features(m2_base,   in_ch).to(device),
-        od_matrix_to_zone_features(s144_base, in_ch).to(device),
+        od_matrix_to_zone_features(bus_kk, in_ch).to(device),
     ]
     scenario_feat = build_scenario_features(
-        'metro_extension', get_affected_zones(s144_diff, zone_ids)
+        'bus_new', get_affected_zones(bus_diff, zone_ids)
     ).to(device)
-    target = diff_to_target(s144_diff, zone_ids, device)
+    target = diff_to_target(bus_diff, zone_ids, device)
 
     pred   = predict(model, model_type, x_seq, scenario_feat, extra)
     pred_np   = pred.cpu().numpy().flatten()

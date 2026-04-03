@@ -202,7 +202,7 @@ class HypergraphLSTMModel(nn.Module):
         self.H            = H_norm.to(self.cfg.DEVICE)
         self.D_v_inv_sqrt = D_v.to(self.cfg.DEVICE)
         self.D_e_inv      = D_e.to(self.cfg.DEVICE)
-        print(f'✅ Hypergraph: {H.shape[0]} zóna, {H.shape[1]} hyperedge')
+        print(f'✅ Hypergraph: {H.shape[0]} zone, {H.shape[1]} hyperedge')
 
     def forward(self, x_seq: List[torch.Tensor],
                 scenario_feat: torch.Tensor) -> torch.Tensor:

@@ -240,8 +240,12 @@ def run_training(args):
         sys.exit(1)
 
     # Train / val split
-    train_scenarios = all_scenarios[:-1]
-    val_scenario    = all_scenarios[-1]
+    train_scenarios = [s for s in all_scenarios if s['name'] != '35 bus']
+    val_scenario    = next((s for s in all_scenarios if s['name'] == '35 bus'), None)
+    if val_scenario is None:
+        print('⚠️  can not find bus route 35 scenario')
+        train_scenarios = all_scenarios[:-1]
+        val_scenario    = all_scenarios[-1]
 
     print(f'\nTraining scenarios ({len(train_scenarios)}):')
     for s in train_scenarios:
