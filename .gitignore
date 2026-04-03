@@ -1,0 +1,26 @@
+# data files
+*.xlsx
+*.csv
+*.zip
+*.shp
+*.dbf
+*.shx
+*.prj
+*.gpkg
+
+# trained modells
+*.pt
+*.pth
+
+# outputs
+*.png
+*.html
+
+# python
+__pycache__/
+*.pyc
+.env
+venv/
+
+# jupyter
+.ipynb_checkpoints/
