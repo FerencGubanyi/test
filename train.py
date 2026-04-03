@@ -18,7 +18,7 @@ import pandas as pd
 import torch
 
 from config.paths import (
-    BASE_DIR, ZONES_SHP, GTFS_ZIP, SYNTHETIC_DIR,
+    BASE_DIR, BUS35_DIFF_KK, M1_DIFF_KK, ZONES_SHP, GTFS_ZIP, SYNTHETIC_DIR,
     M2_BASE_KK, M2_DEV_KK,
     S144_BASE_KK, S144_DIFF_KK,
     M1_KK, BUS35_KK,
@@ -79,8 +79,8 @@ def load_all_scenarios(zone_ids, device, in_channels):
     # M1 extension
     if os.path.exists(M1_KK) and m2_base is not None:
         try:
-            m1_kk   = load_od_matrix_sheet(M1_KK, 'KK')
-            m1_diff = load_od_matrix_sheet(M1_KK, 'DM-DIFF')
+            m1_kk   = load_od_matrix_with_header(M1_KK)
+            m1_diff = load_od_matrix_with_header(M1_DIFF_KK)
             # reindex if it is needed
             m1_kk   = m1_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             m1_diff = m1_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
@@ -99,11 +99,11 @@ def load_all_scenarios(zone_ids, device, in_channels):
         except Exception as e:
             print(f'  ⚠️  M1 load error: {e}')
 
-    # 35-ös autóbusz
+    # 35 bus
     if os.path.exists(BUS35_KK) and m2_base is not None:
         try:
-            bus_kk   = load_od_matrix_sheet(BUS35_KK, 'KK')
-            bus_diff = load_od_matrix_sheet(BUS35_KK, 'DM-DIFF')
+            bus_kk   = load_od_matrix_with_header(BUS35_KK)
+            bus_diff = load_od_matrix_with_header(BUS35_DIFF_KK)
             bus_kk   = bus_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             bus_diff = bus_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
             scenarios.append({

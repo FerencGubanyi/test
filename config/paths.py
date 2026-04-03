@@ -26,11 +26,13 @@ M2_DEV_KK  = os.path.join(BASE_DIR, 'm2_meghosszabitas_kozossegi_kozlekedes_matr
 S144_BASE_KK = os.path.join(BASE_DIR, 's000144_base_KK.xlsx')
 S144_DIFF_KK = os.path.join(BASE_DIR, 's000144_diff_KK.xlsx')
 
-# M1 
-M1_KK = os.path.join(BASE_DIR, 'M1_kozossegi_kozlekedes_matrixok.xlsx')
+# M1
+M1_KK      = os.path.join(BASE_DIR, 'm1_kozossegi_kozlekedes_matrix.xlsx')
+M1_DIFF_KK = os.path.join(BASE_DIR, 'm1_diff_KK.xlsx')
 
-# 35 bus route
-BUS35_KK = os.path.join(BASE_DIR, '35_autobusz_kozossegi_kozlekedesi_matrixok.xlsx')
+# 35 bus
+BUS35_KK       = os.path.join(BASE_DIR, '35_autobusz_kozossegi_kozlekedes_matrix.xlsx')
+BUS35_DIFF_KK  = os.path.join(BASE_DIR, '35_autobusz_diff_KK.xlsx')
 
 # Checkpoints
 GAT_CHECKPOINT = os.path.join(BASE_DIR, 'gat_lstm_best.pt')
