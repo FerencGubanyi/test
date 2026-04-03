@@ -129,6 +129,13 @@ def load_all_scenarios(zone_ids, device, in_channels):
         syn = load_scenarios(SYNTHETIC_DIR, zone_ids)
         for diff, meta in syn:
             x_dev = od_matrix_to_zone_features(m2_base + diff, in_channels)
+            affected = (
+                meta.get('affected_zones') or 
+                meta.get('corridor_zones') or 
+                meta.get('stops') or 
+                []
+            )
+            
             scenarios.append({
                 'name':          meta['scenario_id'],
                 'x_seq':         [
@@ -136,7 +143,7 @@ def load_all_scenarios(zone_ids, device, in_channels):
                     x_dev.to(device),
                 ],
                 'scenario_feat': build_scenario_features(
-                    meta['type'], meta['affected_zones']
+                    meta['type'], affected
                 ).to(device),
                 'target':        diff_to_target(diff, zone_ids, device),
             })
