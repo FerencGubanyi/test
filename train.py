@@ -16,6 +16,8 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from config.paths import (
     BASE_DIR, BUS35_DIFF_KK, M1_DIFF_KK, ZONES_SHP, GTFS_ZIP, SYNTHETIC_DIR,
