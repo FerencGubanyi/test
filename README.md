@@ -1,13 +1,5 @@
 # BKK Utasforgalom Predikció
 
-Óbudai Egyetem, Neumann János Fakultás — Pénzügyi Technológiák szak  
-Témavezető: Sipos Miklós László
-
-Budapest tömegközlekedési hálózatán az utasforgalom újraelosztásának
-predikciója infrastruktúra változások esetén, GAT+LSTM és
-Hypergraph+LSTM architektúrák összehasonlításával.
-
----
 
 ## Struktúra
 
