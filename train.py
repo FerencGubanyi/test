@@ -259,8 +259,8 @@ def run_training(args):
         else:
             valid_scenarios.append(s)
 
-    scenarios = valid_scenarios
-    print(f'  ✅ {len(scenarios)} valid scenarios ({nan_count} NaN filtered)')
+    all_scenarios  = valid_scenarios
+    print(f'  ✅ {len(all_scenarios)} valid scenarios ({nan_count} NaN filtered)')
     # Train / val split
     train_scenarios = [s for s in all_scenarios if s['name'] != '35 bus']
     val_scenario    = next((s for s in all_scenarios if s['name'] == '35 bus'), None)
