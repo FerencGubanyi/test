@@ -248,7 +248,7 @@ def run_training(args):
     # 1.
     valid_scenarios = []
     nan_count = 0
-    for s in scenarios:
+    for s in all_scenarios:
         has_nan = any(
             x.isnan().any() or x.isinf().any()
             for x in s['x_seq']
