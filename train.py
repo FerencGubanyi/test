@@ -280,6 +280,21 @@ def run_training(args):
             has_nan = True
         if not has_nan:
             print(f'  ✅ {s["name"]}')
+    valid_scenarios = []
+    nan_count = 0
+    for s in scenarios:
+        has_nan = any(
+            x.isnan().any() or x.isinf().any() 
+            for x in s['x_seq']
+        ) or s['target'].isnan().any()
+        
+        if has_nan:
+            nan_count += 1
+        else:
+            valid_scenarios.append(s)
+
+    scenarios = valid_scenarios
+    print(f'  ✅ {len(scenarios)} valid scenarió ({nan_count} NaN kiszűrve)')
     for epoch in range(args.epochs):
         # for all of the scenarios
         model.train()

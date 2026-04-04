@@ -97,3 +97,27 @@ def get_affected_zones(diff_matrix: pd.DataFrame,
     total = diff_matrix.abs().sum(axis=1) + diff_matrix.abs().sum(axis=0)
     total = total.reindex(zone_ids).fillna(0)
     return total[total > total.quantile(threshold_pct)].index.tolist()
+
+def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES):
+    features = []
+    for zone_id in od_matrix.index:
+        row = od_matrix.loc[zone_id].values.astype(float)
+        col = (od_matrix[zone_id].values.astype(float)
+               if zone_id in od_matrix.columns
+               else np.zeros(len(od_matrix)))
+        feat = [
+            row.sum(), col.sum(),
+            row.mean(), row.std(),
+            col.mean(), col.std(),
+            (row > 0).sum(), (col > 0).sum(),
+            row.max(), col.max(),
+            np.percentile(row, 75), np.percentile(col, 75),
+            np.percentile(row, 25), np.percentile(col, 25),
+            row.sum() / (col.sum() + 1e-6),
+            np.log1p(max(row.sum(), 0)),  # ← fix
+        ]
+        features.append(feat[:in_channels])
+    t = torch.tensor(features, dtype=torch.float32)
+    t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)  # ← fix
+    t = (t - t.mean(dim=0)) / (t.std(dim=0) + 1e-8)
+    return t
