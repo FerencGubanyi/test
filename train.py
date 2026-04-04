@@ -269,10 +269,17 @@ def run_training(args):
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
     print('NaN check:')
-    for s in train_scenarios[:3]:
+    for s in train_scenarios:
+        has_nan = False
         for i, x in enumerate(s['x_seq']):
-            print(f"  {s['name']} x_seq[{i}]: nan={x.isnan().any()}, inf={x.isinf().any()}")
-        print(f"  target: nan={s['target'].isnan().any()}, inf={s['target'].isinf().any()}")
+            if x.isnan().any() or x.isinf().any():
+                print(f'  ❌ {s["name"]} x_seq[{i}]: nan={x.isnan().any()}, inf={x.isinf().any()}')
+                has_nan = True
+        if s['target'].isnan().any() or s['target'].isinf().any():
+            print(f'  ❌ {s["name"]} target: nan={s["target"].isnan().any()}')
+            has_nan = True
+        if not has_nan:
+            print(f'  ✅ {s["name"]}')
     for epoch in range(args.epochs):
         # for all of the scenarios
         model.train()
