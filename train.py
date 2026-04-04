@@ -245,7 +245,22 @@ def run_training(args):
     if len(all_scenarios) < 2:
         print(f'\n⚠️  Just {len(all_scenarios)} scanario is loaded!')
         sys.exit(1)
+    # 1.
+    valid_scenarios = []
+    nan_count = 0
+    for s in scenarios:
+        has_nan = any(
+            x.isnan().any() or x.isinf().any()
+            for x in s['x_seq']
+        ) or s['target'].isnan().any()
+        
+        if has_nan:
+            nan_count += 1
+        else:
+            valid_scenarios.append(s)
 
+    scenarios = valid_scenarios
+    print(f'  ✅ {len(scenarios)} valid scenarios ({nan_count} NaN filtered)')
     # Train / val split
     train_scenarios = [s for s in all_scenarios if s['name'] != '35 bus']
     val_scenario    = next((s for s in all_scenarios if s['name'] == '35 bus'), None)
@@ -280,21 +295,7 @@ def run_training(args):
             has_nan = True
         if not has_nan:
             print(f'  ✅ {s["name"]}')
-    valid_scenarios = []
-    nan_count = 0
-    for s in scenarios:
-        has_nan = any(
-            x.isnan().any() or x.isinf().any() 
-            for x in s['x_seq']
-        ) or s['target'].isnan().any()
-        
-        if has_nan:
-            nan_count += 1
-        else:
-            valid_scenarios.append(s)
 
-    scenarios = valid_scenarios
-    print(f'  ✅ {len(scenarios)} valid scenarió ({nan_count} NaN kiszűrve)')
     for epoch in range(args.epochs):
         # for all of the scenarios
         model.train()
