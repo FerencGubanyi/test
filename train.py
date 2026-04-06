@@ -34,7 +34,7 @@ from utils.data import (
 from utils.synthetic_scenarios import load_scenarios
 
 
-def load_all_scenarios(zone_ids, device, in_channels):
+def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
     """Load all of the defined scenarios (real + syntetic)."""
     scenarios = []
 
@@ -156,24 +156,72 @@ def run_training(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'Device: {device}')
 
-    #base zone IDs from M2 matrix
     print('\nLoad zone IDs...')
     m2_base  = load_od_matrix_with_header(M2_BASE_KK)
     zone_ids = m2_base.index.tolist()
     print(f'Zones: {len(zone_ids)} ({min(zone_ids)}—{max(zone_ids)})')
 
-    # Pick model
-    if args.model == 'gat':
-        from models.gat_lstm import GATLSTMModel, Config, train
-        cfg            = Config()
-        cfg.NUM_EPOCHS = args.epochs
-        cfg.LEARNING_RATE = args.lr
-        model          = GATLSTMModel(cfg).to(device)
-        save_path      = GAT_CHECKPOINT
-        in_channels    = cfg.GAT_IN_CHANNELS
+    # GTFS feldolgozás — mindkét modellnél kell, egyszer csináljuk meg
+    gtfs_zone_stats = None
+    stop_to_zone    = None
+    gtfs_routes     = None
 
-        # Load grpah
-        from models.gat_lstm import build_zone_graph
+    if os.path.exists(GTFS_ZIP):
+        try:
+            import zipfile
+            import geopandas as gpd
+            from scipy.spatial import cKDTree
+            from utils.data import build_gtfs_zone_stats
+
+            gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
+            gdf['NO'] = gdf['NO'].astype(int)
+            gdf['lon'] = gdf.geometry.centroid.x
+            gdf['lat'] = gdf.geometry.centroid.y
+
+            with zipfile.ZipFile(GTFS_ZIP) as z:
+                stops      = pd.read_csv(z.open('stops.txt'))
+                stop_times = pd.read_csv(z.open('stop_times.txt'))
+                trips      = pd.read_csv(z.open('trips.txt'))
+                routes     = pd.read_csv(z.open('routes.txt'))
+
+            gi = gdf.set_index('NO')
+            coords = np.column_stack([
+                gi.reindex(zone_ids)['lon'].fillna(19.0),
+                gi.reindex(zone_ids)['lat'].fillna(47.5)
+            ])
+            tree = cKDTree(coords)
+            _, idx = tree.query(stops[['stop_lon', 'stop_lat']].values, k=1)
+            stops['zone_id'] = [zone_ids[i] for i in idx]
+            stop_to_zone = dict(zip(stops['stop_id'], stops['zone_id']))
+
+            gtfs_zone_stats = build_gtfs_zone_stats(
+                stops, stop_times, trips, routes, stop_to_zone
+            )
+            print(f'GTFS zone stats: {len(gtfs_zone_stats)} zóna')
+
+            # gtfs_routes a hypergraph-hoz
+            st = stop_times.merge(trips[['trip_id', 'route_id']], on='trip_id')
+            st['zone_id'] = st['stop_id'].map(stop_to_zone)
+            gtfs_routes = (
+                st.groupby('route_id')['zone_id']
+                .apply(lambda x: list(set(x.dropna())))
+                .to_dict()
+            )
+            print(f'GTFS routes: {len(gtfs_routes)} vonal')
+
+        except Exception as e:
+            print(f'GTFS processing error: {e}')
+
+    # Modell init
+    if args.model == 'gat':
+        from models.gat_lstm import GATLSTMModel, Config, train, build_zone_graph
+        cfg               = Config()
+        cfg.NUM_EPOCHS    = args.epochs
+        cfg.LEARNING_RATE = args.lr
+        model             = GATLSTMModel(cfg).to(device)
+        save_path         = GAT_CHECKPOINT
+        in_channels       = cfg.GAT_IN_CHANNELS
+
         try:
             import geopandas as gpd
             gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
@@ -185,52 +233,12 @@ def run_training(args):
     elif args.model == 'hypergraph':
         from models.hypergraph_lstm import HypergraphLSTMModel, HypergraphConfig, train
         from models.hypergraph_lstm import build_incidence_matrix
-        cfg            = HypergraphConfig()
-        cfg.NUM_EPOCHS = args.epochs
+        cfg               = HypergraphConfig()
+        cfg.NUM_EPOCHS    = args.epochs
         cfg.LEARNING_RATE = args.lr
-        model          = HypergraphLSTMModel(cfg).to(device)
-        save_path      = HG_CHECKPOINT
-        in_channels    = cfg.HG_IN_CHANNELS
-
-        #Build Hypergraph
-        gtfs_routes = None
-        if os.path.exists(GTFS_ZIP):
-            try:
-                import zipfile
-                import geopandas as gpd
-                from scipy.spatial import cKDTree
-
-                gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
-                gdf['NO'] = gdf['NO'].astype(int)
-                gdf['lon'] = gdf.geometry.centroid.x
-                gdf['lat'] = gdf.geometry.centroid.y
-
-                with zipfile.ZipFile(GTFS_ZIP) as z:
-                    stops      = pd.read_csv(z.open('stops.txt'))
-                    stop_times = pd.read_csv(z.open('stop_times.txt'))
-                    trips      = pd.read_csv(z.open('trips.txt'))
-
-                gi = gdf.set_index('NO')
-                coords = np.column_stack([
-                    gi.reindex(zone_ids)['lon'].fillna(19.0),
-                    gi.reindex(zone_ids)['lat'].fillna(47.5)
-                ])
-                tree = cKDTree(coords)
-                _, idx = tree.query(stops[['stop_lon', 'stop_lat']].values, k=1)
-                stops['zone_id'] = [zone_ids[i] for i in idx]
-                stop_to_zone = dict(zip(stops['stop_id'], stops['zone_id']))
-
-                st = stop_times.merge(trips[['trip_id', 'route_id']], on='trip_id')
-                st['zone_id'] = st['stop_id'].map(stop_to_zone)
-                gtfs_routes = (
-                    st.groupby('route_id')['zone_id']
-                    .apply(lambda x: list(set(x.dropna())))
-                    .to_dict()
-                )
-                print(f'GTFS: {len(gtfs_routes)} line loaded')
-            except Exception as e:
-                print(f'GTFS error: {e}')
-                gdf = None
+        model             = HypergraphLSTMModel(cfg).to(device)
+        save_path         = HG_CHECKPOINT
+        in_channels       = cfg.HG_IN_CHANNELS
 
         H = build_incidence_matrix(zone_ids, gtfs_routes=gtfs_routes)
         model.set_hypergraph(H)
@@ -239,13 +247,14 @@ def run_training(args):
     else:
         raise ValueError(f'Unknown model: {args.model}. Pick one: gat / hypergraph')
 
-    # Load scenarios
-    all_scenarios = load_all_scenarios(zone_ids, device, in_channels)
+    # Scenario loading
+    all_scenarios = load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats)
 
     if len(all_scenarios) < 2:
-        print(f'\n⚠️  Just {len(all_scenarios)} scanario is loaded!')
+        print(f'\n⚠️  Only {len(all_scenarios)} scenario loaded!')
         sys.exit(1)
-    # 1.
+
+    # NaN szűrés
     valid_scenarios = []
     nan_count = 0
     for s in all_scenarios:
@@ -253,19 +262,19 @@ def run_training(args):
             x.isnan().any() or x.isinf().any()
             for x in s['x_seq']
         ) or s['target'].isnan().any()
-        
         if has_nan:
             nan_count += 1
         else:
             valid_scenarios.append(s)
 
-    all_scenarios  = valid_scenarios
-    print(f'  ✅ {len(all_scenarios)} valid scenarios ({nan_count} NaN filtered)')
+    all_scenarios = valid_scenarios
+    print(f'  ✅ {len(all_scenarios)} valid scenario ({nan_count} NaN filtered)')
+
     # Train / val split
     train_scenarios = [s for s in all_scenarios if s['name'] != '35 bus']
     val_scenario    = next((s for s in all_scenarios if s['name'] == '35 bus'), None)
     if val_scenario is None:
-        print('⚠️  can not find bus route 35 scenario')
+        print('⚠️  Can not find bus route 35 scenario, the last scenario will be the val')
         train_scenarios = all_scenarios[:-1]
         val_scenario    = all_scenarios[-1]
 
@@ -274,15 +283,12 @@ def run_training(args):
         print(f'  - {s["name"]}')
     print(f'Validation: {val_scenario["name"]}')
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
-    criterion = nn.MSELoss()
-
-    best_val_loss    = float('inf')
-    patience_counter = 0
+    # edge_index hozzárendelés GAT-nál
     if args.model == 'gat':
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
+
+    # NaN check
     print('NaN check:')
     for s in train_scenarios:
         has_nan = False
@@ -296,8 +302,16 @@ def run_training(args):
         if not has_nan:
             print(f'  ✅ {s["name"]}')
 
+    # Training loop
+    optimizer        = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    scheduler        = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    criterion        = nn.MSELoss()
+    best_val_loss    = float('inf')
+    patience_counter = 0
+
+    print(f'\nTraining — device: {device} | parameters: {sum(p.numel() for p in model.parameters()):,}')
+
     for epoch in range(args.epochs):
-        # for all of the scenarios
         model.train()
         epoch_losses = []
         for s in train_scenarios:
@@ -314,7 +328,6 @@ def run_training(args):
 
         train_loss = np.mean(epoch_losses)
 
-        # validation
         model.eval()
         with torch.no_grad():
             if args.model == 'gat':

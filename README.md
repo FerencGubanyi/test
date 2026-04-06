@@ -1,7 +1,7 @@
-# BKK Utasforgalom Predikció
+# BKK Thesis work
 
 
-## Struktúra
+## Structure
 
 ```
 bkk_thesis/
@@ -16,9 +16,6 @@ bkk_thesis/
 └── evaluate.py             
 ```
 
----
-
-## Gyors start
 
 ### Google Colab
 ```python
@@ -33,16 +30,15 @@ drive.mount('/content/drive')
 !python train.py --model gat
 !python train.py --model hypergraph
 
-# Kiértékelés
+# Evaluation
 !python evaluate.py --model all
 ```
 
-### Lokális VS Code
+### Local VS Code
 ```bash
-git clone https://github.com/FELHASZNALONEV/bkk_thesis.git
+git clone https://github.com/USERNAME/bkk_thesis.git
 cd bkk_thesis
 pip install -r requirements.txt
-# Módosítsd a config/paths.py BASE_DIR változóját
 
 python train.py --model gat --epochs 100
 python evaluate.py --model all
@@ -50,23 +46,14 @@ python evaluate.py --model all
 
 ---
 
-## Adatok
+## Datas from Google Drive 
 
-A nagy adatfájlok (xlsx, shp, pt) nem kerülnek a repóba — Google Drive-on tárolva.
-
-| Scenarió | Típus | Forrás |
-|----------|-------|--------|
-| M2 meghosszabbítás | Metró | BKK (Gergely) |
-| S000144 | Metró | VISUM export |
-| M1 meghosszabbítás | Metró | BKK (Gergely) |
-| 35-ös autóbusz | Busz | BKK (Gergely) |
-| 9× szintetikus | Vegyes | Generált |
 
 ---
 
-## Architektúrák
+## Architectures
 
-**GAT+LSTM**: zóna szomszédossági gráf → multi-head attention → LSTM → ΔOD  
-**Hypergraph+LSTM**: BKK vonalak mint hyperedge-ek → HGNN → LSTM → ΔOD  
+**GAT+LSTM**: Zone neighbouring graph → multi-head attention → LSTM → ΔOD  
+**Hypergraph+LSTM**: BKK lines like hyperedges → HGNN → LSTM → ΔOD  
 
-Irodalom: Feng et al. (2019) — Hypergraph Neural Networks
+Cource: Feng et al. (2019) — Hypergraph Neural Networks

@@ -42,32 +42,7 @@ def load_od_matrix_sheet(filepath: str, sheet_name: str,
     return pd.DataFrame(matrix, index=row_ids, columns=zone_ids)
 
 
-NUM_FEATURES = 16
-
-def od_matrix_to_zone_features(od_matrix: pd.DataFrame,
-                                in_channels: int = NUM_FEATURES) -> torch.Tensor:
-    """OD matrices → normalized zone feature vektors (N x in_channels)."""
-    features = []
-    for zone_id in od_matrix.index:
-        row = od_matrix.loc[zone_id].values.astype(float)
-        col = (od_matrix[zone_id].values.astype(float)
-               if zone_id in od_matrix.columns
-               else np.zeros(len(od_matrix)))
-        feat = [
-            row.sum(), col.sum(),
-            row.mean(), row.std(),
-            col.mean(), col.std(),
-            (row > 0).sum(), (col > 0).sum(),
-            row.max(), col.max(),
-            np.percentile(row, 75), np.percentile(col, 75),
-            np.percentile(row, 25), np.percentile(col, 25),
-            row.sum() / (col.sum() + 1e-6),
-            np.log1p(row.sum()),
-        ]
-        features.append(feat[:in_channels])
-    t = torch.tensor(features, dtype=torch.float32)
-    return (t - t.mean(dim=0)) / (t.std(dim=0) + 1e-8)
-
+NUM_FEATURES = 22
 
 def diff_to_target(diff_matrix: pd.DataFrame,
                    zone_ids: List[int],
@@ -98,9 +73,9 @@ def get_affected_zones(diff_matrix: pd.DataFrame,
     total = total.reindex(zone_ids).fillna(0)
     return total[total > total.quantile(threshold_pct)].index.tolist()
 
-def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES):
+def od_matrix_to_zone_features(od_matrix, gtfs_zone_stats=None, in_channels=NUM_FEATURES):
     features = []
-    for zone_id in od_matrix.index:
+    for i, zone_id in enumerate(od_matrix.index):
         row = od_matrix.loc[zone_id].values.astype(float)
         col = (od_matrix[zone_id].values.astype(float)
                if zone_id in od_matrix.columns
@@ -114,10 +89,47 @@ def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES):
             np.percentile(row, 75), np.percentile(col, 75),
             np.percentile(row, 25), np.percentile(col, 25),
             row.sum() / (col.sum() + 1e-6),
-            np.log1p(max(row.sum(), 0)),  # ← fix
+            np.log1p(max(row.sum(), 0)),
         ]
-        features.append(feat[:in_channels])
+        # GTFS feature-ök hozzáadása, ha van
+        if gtfs_zone_stats is not None and zone_id in gtfs_zone_stats.index:
+            g = gtfs_zone_stats.loc[zone_id]
+            feat += [
+                g.get('n_routes', 0),      # hány útvonal érinti
+                g.get('n_trips', 0),       # napi járatszám
+                g.get('n_stops', 0),       # megállók száma
+                g.get('has_metro', 0),     # van-e metró
+                g.get('has_tram', 0),      # van-e villamos
+                g.get('has_rail', 0),      # van-e HÉV
+            ]
+        features.append(feat)
+
     t = torch.tensor(features, dtype=torch.float32)
-    t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)  # ← fix
-    t = (t - t.mean(dim=0)) / (t.std(dim=0) + 1e-8)
-    return t
+    t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+    return (t - t.mean(dim=0)) / (t.std(dim=0) + 1e-8)
+
+def build_gtfs_zone_stats(stops_df: pd.DataFrame,
+                           stop_times_df: pd.DataFrame,
+                           trips_df: pd.DataFrame,
+                           routes_df: pd.DataFrame,
+                           stop_zone_map: dict) -> pd.DataFrame:
+    """GTFS adatokból zónánkénti hálózati statisztikák."""
+    stops_df = stops_df.copy()
+    stops_df['zone_id'] = stops_df['stop_id'].map(stop_zone_map)
+
+    merged = (stop_times_df
+              .merge(trips_df[['trip_id', 'route_id']], on='trip_id')
+              .merge(routes_df[['route_id', 'route_type']], on='route_id'))
+    merged['zone_id'] = merged['stop_id'].map(stop_zone_map)
+    merged = merged.dropna(subset=['zone_id'])
+    merged['zone_id'] = merged['zone_id'].astype(int)
+
+    stats = merged.groupby('zone_id').agg(
+        n_routes  = ('route_id',   'nunique'),
+        n_trips   = ('trip_id',    'nunique'),
+        n_stops   = ('stop_id',    'nunique'),
+        has_metro = ('route_type', lambda x: int((x == 1).any())),
+        has_tram  = ('route_type', lambda x: int((x == 0).any())),
+        has_rail  = ('route_type', lambda x: int((x == 2).any())),
+    )
+    return stats
