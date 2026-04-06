@@ -144,8 +144,6 @@ def build_gtfs_from_zip(gtfs_zip, zones_shp, zone_ids):
         import geopandas as gpd
         from scipy.spatial import cKDTree
 
-
-        
         with zipfile.ZipFile(gtfs_zip) as z:
             stops      = pd.read_csv(z.open('stops.txt'))
             stop_times = pd.read_csv(z.open('stop_times.txt'))

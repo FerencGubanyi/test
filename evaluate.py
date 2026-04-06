@@ -133,8 +133,8 @@ def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None):
         return None
 
     m2_base  = load_od_matrix_with_header(M2_BASE_KK)
-    bus_kk   = load_od_matrix_with_header(BUS35_KK)
-    bus_diff = load_od_matrix_with_header(BUS35_DIFF_KK)
+    bus_kk   = load_od_matrix_with_header(M2_BASE_KK)
+    bus_diff = load_od_matrix_with_header(M2_DEV_KK)
     bus_kk   = bus_kk.reindex(index=zone_ids, columns=zone_ids).fillna(0)
     bus_diff = bus_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
 
