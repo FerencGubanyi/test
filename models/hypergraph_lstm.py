@@ -98,17 +98,15 @@ def normalize_incidence(H: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, to
     HGNN normalization (Feng et al., 2019).
     D_v = zone degree, D_e = hyperedge degree.
     """
-    d_v = torch.clamp(H.sum(dim=1), min=1.0)
-    d_e = torch.clamp(H.sum(dim=0), min=1.0)
-    return H, torch.diag(d_v ** -0.5), torch.diag(d_e ** -1.0)
-
+    d_v = torch.clamp(H.sum(dim=1), min=1.0)  # (N,)
+    d_e = torch.clamp(H.sum(dim=0), min=1.0)  # (M,)
+    return H, d_v ** -0.5, d_e ** -1.0
 
 class HypergraphConv(nn.Module):
     """
     Hypergraph convolution layer — Feng et al. (2019).
     X' = D_v^{-1/2} H D_e^{-1} H^T D_v^{-1/2} X W
     """
-
     def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.2):
         super().__init__()
         self.linear  = nn.Linear(in_channels, out_channels)
@@ -116,17 +114,17 @@ class HypergraphConv(nn.Module):
         self.bn      = nn.BatchNorm1d(out_channels)
 
     def forward(self, x, H, D_v_inv_sqrt, D_e_inv):
-        x = D_v_inv_sqrt @ x
-        x = H.T @ x
-        x = D_e_inv @ x
-        x = H @ x
-        x = D_v_inv_sqrt @ x
+        # D_v_inv_sqrt: (N,)  D_e_inv: (M,)  x: (N, F)
+        x = x * D_v_inv_sqrt.unsqueeze(1)   # (N, F)
+        x = H.T @ x                          # (M, F)
+        x = x * D_e_inv.unsqueeze(1)         # (M, F)
+        x = H @ x                            # (N, F)
+        x = x * D_v_inv_sqrt.unsqueeze(1)   # (N, F)
         x = self.linear(x)
         x = self.bn(x)
         x = F.elu(x)
         x = self.dropout(x)
         return x
-
 
 class HypergraphEncoder(nn.Module):
     """Multi layer hypergraph encoder."""
@@ -198,10 +196,10 @@ class HypergraphLSTMModel(nn.Module):
         self.H = self.D_v_inv_sqrt = self.D_e_inv = None
 
     def set_hypergraph(self, H: torch.Tensor):
-        H_norm, D_v, D_e = normalize_incidence(H)
+        H_norm, d_v, d_e = normalize_incidence(H)
         self.H            = H_norm.to(self.cfg.DEVICE)
-        self.D_v_inv_sqrt = D_v.to(self.cfg.DEVICE)
-        self.D_e_inv      = D_e.to(self.cfg.DEVICE)
+        self.D_v_inv_sqrt = d_v.to(self.cfg.DEVICE)
+        self.D_e_inv      = d_e.to(self.cfg.DEVICE)
         print(f'✅ Hypergraph: {H.shape[0]} zone, {H.shape[1]} hyperedge')
 
     def forward(self, x_seq: List[torch.Tensor],
