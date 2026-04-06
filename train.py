@@ -9,7 +9,7 @@ Usage:
 Colab:
   !python train.py --model gat
 """
-
+import random
 import argparse
 import os
 import sys
@@ -265,7 +265,9 @@ def run_training(args):
     for epoch in range(args.epochs):
         model.train()
         epoch_losses = []
-        for s in train_scenarios:
+        shuffled = train_scenarios.copy()
+        random.shuffle(shuffled)
+        for s in shuffled:
             optimizer.zero_grad()
             if args.model == 'gat':
                 pred = model(s['x_seq'], s['edge_index'], s['scenario_feat'])
@@ -273,7 +275,7 @@ def run_training(args):
                 pred = model(s['x_seq'], s['scenario_feat'])
             loss = criterion(pred, s['target'])
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             optimizer.step()
             epoch_losses.append(loss.item())
 
