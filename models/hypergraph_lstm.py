@@ -21,7 +21,7 @@ class HypergraphConfig:
     NUM_SCENARIOS   = 3
 
     # Hypergraph — same as GAT+LSTM
-    HG_IN_CHANNELS  = 16
+    HG_IN_CHANNELS  = 22
     HG_HIDDEN       = 64
     HG_OUT_CHANNELS = 32
     HG_NUM_LAYERS   = 2

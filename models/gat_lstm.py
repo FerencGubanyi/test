@@ -24,7 +24,7 @@ class Config:
     NUM_SCENARIOS   = 3
 
     # GAT
-    GAT_IN_CHANNELS  = 16
+    GAT_IN_CHANNELS  = 22
     GAT_HIDDEN       = 64
     GAT_OUT_CHANNELS = 32
     GAT_HEADS        = 4
@@ -189,34 +189,6 @@ def build_zone_graph(zone_ids: List[int], gdf=None,
         for j in neighbors:
             edges.append([i, j])
     return torch.tensor(edges, dtype=torch.long).t().contiguous()
-
-
-def od_matrix_to_zone_features(od_matrix: pd.DataFrame,
-                                cfg: Config) -> torch.Tensor:
-    """Create 16 dimension zone feature vector from OD matrix"""
-    features = []
-    for zone_id in od_matrix.index:
-        row = od_matrix.loc[zone_id].values.astype(float)
-        col = (od_matrix[zone_id].values.astype(float)
-               if zone_id in od_matrix.columns
-               else np.zeros(len(od_matrix)))
-        feat = [
-            row.sum(), col.sum(),
-            row.mean(), row.std(),
-            col.mean(), col.std(),
-            (row > 0).sum(), (col > 0).sum(),
-            row.max(), col.max(),
-            np.percentile(row, 75), np.percentile(col, 75),
-            np.percentile(row, 25), np.percentile(col, 25),
-            row.sum() / (col.sum() + 1e-6),
-            np.log1p(row.sum()),
-        ]
-        features.append(feat)
-    feat_tensor = torch.tensor(features, dtype=torch.float32)
-    feat_tensor = (feat_tensor - feat_tensor.mean(dim=0)) / (feat_tensor.std(dim=0) + 1e-8)
-    assert feat_tensor.shape == (len(od_matrix), cfg.GAT_IN_CHANNELS)
-    return feat_tensor
-
 
 def build_scenario_features(scenario_type: str, affected_zones: List[int],
                               num_new_stops: int = 0) -> torch.Tensor:
