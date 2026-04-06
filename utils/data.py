@@ -43,6 +43,7 @@ def load_od_matrix_sheet(filepath: str, sheet_name: str,
 
 
 NUM_FEATURES = 22
+GTFS_FEATURES = 6
 
 def diff_to_target(diff_matrix: pd.DataFrame,
                    zone_ids: List[int],
@@ -75,7 +76,7 @@ def get_affected_zones(diff_matrix: pd.DataFrame,
 
 def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES, gtfs_zone_stats=None):
     features = []
-    for i, zone_id in enumerate(od_matrix.index):
+    for zone_id in od_matrix.index:
         row = od_matrix.loc[zone_id].values.astype(float)
         col = (od_matrix[zone_id].values.astype(float)
                if zone_id in od_matrix.columns
@@ -91,17 +92,19 @@ def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES, gtfs_zone_st
             row.sum() / (col.sum() + 1e-6),
             np.log1p(max(row.sum(), 0)),
         ]
-        # GTFS feature-ök hozzáadása, ha van
-        if gtfs_zone_stats is not None and zone_id in gtfs_zone_stats.index:
-            g = gtfs_zone_stats.loc[zone_id]
-            feat += [
-                g.get('n_routes', 0),      # hány útvonal érinti
-                g.get('n_trips', 0),       # napi járatszám
-                g.get('n_stops', 0),       # megállók száma
-                g.get('has_metro', 0),     # van-e metró
-                g.get('has_tram', 0),      # van-e villamos
-                g.get('has_rail', 0),      # van-e HÉV
-            ]
+        if gtfs_zone_stats is not None:
+            if zone_id in gtfs_zone_stats.index:
+                g = gtfs_zone_stats.loc[zone_id]
+                feat += [
+                    float(g.get('n_routes',  0)),
+                    float(g.get('n_trips',   0)),
+                    float(g.get('n_stops',   0)),
+                    float(g.get('has_metro', 0)),
+                    float(g.get('has_tram',  0)),
+                    float(g.get('has_rail',  0)),
+                ]
+            else:
+                feat += [0.0] * GTFS_FEATURES 
         features.append(feat)
 
     t = torch.tensor(features, dtype=torch.float32)
