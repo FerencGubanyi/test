@@ -73,7 +73,7 @@ def get_affected_zones(diff_matrix: pd.DataFrame,
     total = total.reindex(zone_ids).fillna(0)
     return total[total > total.quantile(threshold_pct)].index.tolist()
 
-def od_matrix_to_zone_features(od_matrix, gtfs_zone_stats=None, in_channels=NUM_FEATURES):
+def od_matrix_to_zone_features(od_matrix, in_channels=NUM_FEATURES, gtfs_zone_stats=None):
     features = []
     for i, zone_id in enumerate(od_matrix.index):
         row = od_matrix.loc[zone_id].values.astype(float)
