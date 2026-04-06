@@ -28,7 +28,7 @@ from config.paths import (
 from utils.data import (
     load_od_matrix_with_header, load_od_matrix_no_header,
     od_matrix_to_zone_features, diff_to_target,
-    build_scenario_features, get_affected_zones, build_gtfs_from_zip
+    build_scenario_features, get_affected_zones, build_gtfs_from_zip 
 )
 
 
@@ -126,6 +126,48 @@ def compute_metrics(pred_np, target_np):
     r2   = 1 - ss_res / ss_tot if ss_tot > 0 else 0
     return {'MAE': mae, 'RMSE': rmse, 'R2': r2}
 
+def plot_prediction_map(pred_np, zone_ids, gdf, save_path, title='ΔOD Prediction'):
+    """Prediktált ΔOD choropleth térkép."""
+    
+    # Zóna szintű predikció DataFrame
+    pred_df = pd.DataFrame({
+        'NO':  zone_ids,
+        'pred': pred_np
+    })
+    
+    gdf_plot = gdf.merge(pred_df, on='NO', how='left')
+    
+    m = folium.Map(location=[47.497, 19.040], zoom_start=11,
+                   tiles='CartoDB positron')
+    
+    vmax = np.percentile(np.abs(pred_np), 95)
+    
+    folium.Choropleth(
+        geo_data    = gdf_plot.__geo_interface__,
+        data        = gdf_plot,
+        columns     = ['NO', 'pred'],
+        key_on      = 'feature.properties.NO',
+        fill_color  = 'RdBu',
+        fill_opacity= 0.7,
+        line_opacity= 0.1,
+        legend_name = 'Predicted ΔOD (passengers/day)',
+        nan_fill_color = 'lightgray'
+    ).add_to(m)
+    
+    # Tooltip
+    folium.GeoJson(
+        gdf_plot,
+        style_function = lambda x: {'fillOpacity': 0, 'weight': 0},
+        tooltip = folium.GeoJsonTooltip(
+            fields  = ['NO', 'pred'],
+            aliases = ['Zone ID:', 'Predicted ΔOD:'],
+            localize= True
+        )
+    ).add_to(m)
+    
+    m.save(save_path)
+    print(f'✅ Térkép mentve: {save_path}')
+    return m
 
 def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None,gdf=None):
     """Model validation on bus35 scenario"""
@@ -249,46 +291,5 @@ if __name__ == '__main__':
     if len(results) > 0:
         plot_comparison(results, save_dir=BASE_DIR)
 
-def plot_prediction_map(pred_np, zone_ids, gdf, save_path, title='ΔOD Prediction'):
-    """Prediktált ΔOD choropleth térkép."""
-    
-    # Zóna szintű predikció DataFrame
-    pred_df = pd.DataFrame({
-        'NO':  zone_ids,
-        'pred': pred_np
-    })
-    
-    gdf_plot = gdf.merge(pred_df, on='NO', how='left')
-    
-    m = folium.Map(location=[47.497, 19.040], zoom_start=11,
-                   tiles='CartoDB positron')
-    
-    vmax = np.percentile(np.abs(pred_np), 95)
-    
-    folium.Choropleth(
-        geo_data    = gdf_plot.__geo_interface__,
-        data        = gdf_plot,
-        columns     = ['NO', 'pred'],
-        key_on      = 'feature.properties.NO',
-        fill_color  = 'RdBu',
-        fill_opacity= 0.7,
-        line_opacity= 0.1,
-        legend_name = 'Predicted ΔOD (passengers/day)',
-        nan_fill_color = 'lightgray'
-    ).add_to(m)
-    
-    # Tooltip
-    folium.GeoJson(
-        gdf_plot,
-        style_function = lambda x: {'fillOpacity': 0, 'weight': 0},
-        tooltip = folium.GeoJsonTooltip(
-            fields  = ['NO', 'pred'],
-            aliases = ['Zone ID:', 'Predicted ΔOD:'],
-            localize= True
-        )
-    ).add_to(m)
-    
-    m.save(save_path)
-    print(f'✅ Térkép mentve: {save_path}')
-    return m
+
 
