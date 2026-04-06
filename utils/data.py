@@ -144,17 +144,20 @@ def build_gtfs_from_zip(gtfs_zip, zones_shp, zone_ids):
         import geopandas as gpd
         from scipy.spatial import cKDTree
 
-        gdf = gpd.read_file(zones_shp).to_crs(epsg=23700)
-        gdf['NO'] = gdf['NO'].astype(int)
-        gdf['lon'] = gdf.geometry.centroid.x
-        gdf['lat'] = gdf.geometry.centroid.y
-        gdf = gdf.to_crs(epsg=4326)
+
         
         with zipfile.ZipFile(gtfs_zip) as z:
             stops      = pd.read_csv(z.open('stops.txt'))
             stop_times = pd.read_csv(z.open('stop_times.txt'))
             trips      = pd.read_csv(z.open('trips.txt'))
             routes     = pd.read_csv(z.open('routes.txt'))
+
+        gdf = gpd.read_file(zones_shp).to_crs(epsg=23700)
+        gdf['NO'] = gdf['NO'].astype(int)
+        centroids_eov = gdf.geometry.centroid  # pontos centroid EOV-ban
+        gdf = gdf.to_crs(epsg=4326)
+        gdf['lon'] = gpd.GeoSeries(centroids_eov, crs=23700).to_crs(4326).x
+        gdf['lat'] = gpd.GeoSeries(centroids_eov, crs=23700).to_crs(4326).y
 
         gi = gdf.set_index('NO')
         coords = np.column_stack([
