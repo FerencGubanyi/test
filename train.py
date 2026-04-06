@@ -303,8 +303,8 @@ def run_training(args):
             print(f'  ✅ {s["name"]}')
 
     # Training loop
-    optimizer        = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler        = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    optimizer        = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-6)
+    scheduler        = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer, patience=8, factor=0.7, min_lr=1e-5)
     criterion        = nn.MSELoss()
     best_val_loss    = float('inf')
     patience_counter = 0
@@ -349,7 +349,7 @@ def run_training(args):
             if epoch % 10 == 0:
                 print(f'  Epoch {epoch+1:3d} | Train: {train_loss:.4f} | Val: {val_loss:.4f}')
 
-        if patience_counter >= 15:
+        if patience_counter >= args.patience:
             print(f'Early stopping — {epoch+1} epoch')
             break
 
@@ -358,6 +358,7 @@ def run_training(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='BKK OD prediction training')
+    parser.add_argument('--patience', type=int, default=25)
     parser.add_argument('--model',  type=str, default='gat',
                         choices=['gat', 'hypergraph'],
                         help='Modell type (gat / hypergraph)')
