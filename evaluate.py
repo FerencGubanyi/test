@@ -27,7 +27,7 @@ from config.paths import (
 from utils.data import (
     load_od_matrix_with_header, load_od_matrix_no_header,
     od_matrix_to_zone_features, diff_to_target,
-    build_scenario_features, get_affected_zones
+    build_scenario_features, get_affected_zones, build_gtfs_from_zip
 )
 
 
@@ -126,7 +126,7 @@ def compute_metrics(pred_np, target_np):
     return {'MAE': mae, 'RMSE': rmse, 'R2': r2}
 
 
-def evaluate_model(model_type, zone_ids, device):
+def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None):
     """Model validation on bus35 scenario"""
     model, extra, in_ch, cfg = load_model(model_type, zone_ids, device)
     if model is None:
@@ -139,8 +139,8 @@ def evaluate_model(model_type, zone_ids, device):
     bus_diff = bus_diff.reindex(index=zone_ids, columns=zone_ids).fillna(0)
 
     x_seq = [
-        od_matrix_to_zone_features(m2_base,   in_ch).to(device),
-        od_matrix_to_zone_features(bus_kk, in_ch).to(device),
+        od_matrix_to_zone_features(m2_base,   in_ch, gtfs_zone_stats).to(device),
+        od_matrix_to_zone_features(bus_kk, in_ch, gtfs_zone_stats).to(device),
     ]
     scenario_feat = build_scenario_features(
         'bus_new', get_affected_zones(bus_diff, zone_ids)
@@ -222,11 +222,14 @@ if __name__ == '__main__':
     m2_base  = load_od_matrix_with_header(M2_BASE_KK)
     zone_ids = m2_base.index.tolist()
 
+    # GTFS betöltés
+    gtfs_zone_stats, _ = build_gtfs_from_zip(GTFS_ZIP, ZONES_SHP, zone_ids)
+
     models_to_eval = ['gat', 'hypergraph'] if args.model == 'all' else [args.model]
 
     results = []
     for m in models_to_eval:
-        r = evaluate_model(m, zone_ids, device)
+        r = evaluate_model(m, zone_ids, device, gtfs_zone_stats=gtfs_zone_stats)
         if r is not None:
             results.append(r)
 

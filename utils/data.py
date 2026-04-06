@@ -133,3 +133,49 @@ def build_gtfs_zone_stats(stops_df: pd.DataFrame,
         has_rail  = ('route_type', lambda x: int((x == 2).any())),
     )
     return stats
+
+def build_gtfs_from_zip(gtfs_zip, zones_shp, zone_ids):
+    """Visszaad: (gtfs_zone_stats, gtfs_routes) — mindkét modellnek kell."""
+    try:
+        import zipfile
+        import geopandas as gpd
+        from scipy.spatial import cKDTree
+
+        gdf = gpd.read_file(zones_shp).to_crs(epsg=4326)
+        gdf['NO'] = gdf['NO'].astype(int)
+        gdf['lon'] = gdf.geometry.centroid.x
+        gdf['lat'] = gdf.geometry.centroid.y
+
+        with zipfile.ZipFile(gtfs_zip) as z:
+            stops      = pd.read_csv(z.open('stops.txt'))
+            stop_times = pd.read_csv(z.open('stop_times.txt'))
+            trips      = pd.read_csv(z.open('trips.txt'))
+            routes     = pd.read_csv(z.open('routes.txt'))
+
+        gi = gdf.set_index('NO')
+        coords = np.column_stack([
+            gi.reindex(zone_ids)['lon'].fillna(19.0),
+            gi.reindex(zone_ids)['lat'].fillna(47.5)
+        ])
+        tree = cKDTree(coords)
+        _, idx = tree.query(stops[['stop_lon', 'stop_lat']].values, k=1)
+        stops['zone_id'] = [zone_ids[i] for i in idx]
+        stop_to_zone = dict(zip(stops['stop_id'], stops['zone_id']))
+
+        gtfs_zone_stats = build_gtfs_zone_stats(stops, stop_times, trips, routes, stop_to_zone)
+        print(f'GTFS zone stats: {len(gtfs_zone_stats)} zone')
+
+        st = stop_times.merge(trips[['trip_id', 'route_id']], on='trip_id')
+        st['zone_id'] = st['stop_id'].map(stop_to_zone)
+        gtfs_routes = (
+            st.groupby('route_id')['zone_id']
+            .apply(lambda x: list(set(x.dropna())))
+            .to_dict()
+        )
+        print(f'GTFS routes: {len(gtfs_routes)} line')
+
+        return gtfs_zone_stats, gtfs_routes
+
+    except Exception as e:
+        print(f'GTFS processing error: {e}')
+        return None, None

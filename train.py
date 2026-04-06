@@ -29,7 +29,7 @@ from config.paths import (
 from utils.data import (
     load_od_matrix_with_header, load_od_matrix_no_header,
     load_od_matrix_sheet, od_matrix_to_zone_features,
-    diff_to_target, build_scenario_features, get_affected_zones
+    diff_to_target, build_scenario_features, get_affected_zones, build_gtfs_from_zip
 )
 from utils.synthetic_scenarios import load_scenarios
 
@@ -48,8 +48,8 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
         scenarios.append({
             'name':          'M2 extension',
             'x_seq':         [
-                od_matrix_to_zone_features(m2_base, in_channels).to(device),
-                od_matrix_to_zone_features(m2_dev,  in_channels).to(device),
+                od_matrix_to_zone_features(m2_base, in_channels, gtfs_zone_stats).to(device),
+                od_matrix_to_zone_features(m2_dev,  in_channels, gtfs_zone_stats).to(device),
             ],
             'scenario_feat': build_scenario_features(
                 'metro_extension', get_affected_zones(m2_diff, zone_ids)
@@ -68,8 +68,8 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
         scenarios.append({
             'name':          'S000144',
             'x_seq':         [
-                od_matrix_to_zone_features(m2_base,   in_channels).to(device),
-                od_matrix_to_zone_features(s144_base, in_channels).to(device),
+                od_matrix_to_zone_features(m2_base,   in_channels, gtfs_zone_stats).to(device),
+                od_matrix_to_zone_features(s144_base, in_channels, gtfs_zone_stats).to(device),
             ],
             'scenario_feat': build_scenario_features(
                 'metro_extension', get_affected_zones(s144_diff, zone_ids)
@@ -89,8 +89,8 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
             scenarios.append({
                 'name':          'M1 extension',
                 'x_seq':         [
-                    od_matrix_to_zone_features(m2_base, in_channels).to(device),
-                    od_matrix_to_zone_features(m1_kk,   in_channels).to(device),
+                    od_matrix_to_zone_features(m2_base, in_channels, gtfs_zone_stats).to(device),
+                    od_matrix_to_zone_features(m1_kk,   in_channels, gtfs_zone_stats).to(device),
                 ],
                 'scenario_feat': build_scenario_features(
                     'metro_extension', get_affected_zones(m1_diff, zone_ids)
@@ -111,8 +111,8 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
             scenarios.append({
                 'name':          '35 bus',
                 'x_seq':         [
-                    od_matrix_to_zone_features(m2_base, in_channels).to(device),
-                    od_matrix_to_zone_features(bus_kk,  in_channels).to(device),
+                    od_matrix_to_zone_features(m2_base, in_channels, gtfs_zone_stats).to(device),
+                    od_matrix_to_zone_features(bus_kk,  in_channels, gtfs_zone_stats).to(device),
                 ],
                 'scenario_feat': build_scenario_features(
                     'bus_new', get_affected_zones(bus_diff, zone_ids)
@@ -128,7 +128,7 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
         print('\nLoading synthetic scenarios...')
         syn = load_scenarios(SYNTHETIC_DIR, zone_ids)
         for diff, meta in syn:
-            x_dev = od_matrix_to_zone_features(m2_base + diff, in_channels)
+            x_dev = od_matrix_to_zone_features(m2_base + diff, in_channels, gtfs_zone_stats)
             affected = (
                 meta.get('affected_zones') or 
                 meta.get('corridor_zones') or 
@@ -139,7 +139,7 @@ def load_all_scenarios(zone_ids, device, in_channels, gtfs_zone_stats=None):
             scenarios.append({
                 'name':          meta['scenario_id'],
                 'x_seq':         [
-                    od_matrix_to_zone_features(m2_base, in_channels).to(device),
+                    od_matrix_to_zone_features(m2_base, in_channels, gtfs_zone_stats).to(device),
                     x_dev.to(device),
                 ],
                 'scenario_feat': build_scenario_features(
@@ -161,56 +161,7 @@ def run_training(args):
     zone_ids = m2_base.index.tolist()
     print(f'Zones: {len(zone_ids)} ({min(zone_ids)}—{max(zone_ids)})')
 
-    # GTFS feldolgozás — mindkét modellnél kell, egyszer csináljuk meg
-    gtfs_zone_stats = None
-    stop_to_zone    = None
-    gtfs_routes     = None
-
-    if os.path.exists(GTFS_ZIP):
-        try:
-            import zipfile
-            import geopandas as gpd
-            from scipy.spatial import cKDTree
-            from utils.data import build_gtfs_zone_stats
-
-            gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
-            gdf['NO'] = gdf['NO'].astype(int)
-            gdf['lon'] = gdf.geometry.centroid.x
-            gdf['lat'] = gdf.geometry.centroid.y
-
-            with zipfile.ZipFile(GTFS_ZIP) as z:
-                stops      = pd.read_csv(z.open('stops.txt'))
-                stop_times = pd.read_csv(z.open('stop_times.txt'))
-                trips      = pd.read_csv(z.open('trips.txt'))
-                routes     = pd.read_csv(z.open('routes.txt'))
-
-            gi = gdf.set_index('NO')
-            coords = np.column_stack([
-                gi.reindex(zone_ids)['lon'].fillna(19.0),
-                gi.reindex(zone_ids)['lat'].fillna(47.5)
-            ])
-            tree = cKDTree(coords)
-            _, idx = tree.query(stops[['stop_lon', 'stop_lat']].values, k=1)
-            stops['zone_id'] = [zone_ids[i] for i in idx]
-            stop_to_zone = dict(zip(stops['stop_id'], stops['zone_id']))
-
-            gtfs_zone_stats = build_gtfs_zone_stats(
-                stops, stop_times, trips, routes, stop_to_zone
-            )
-            print(f'GTFS zone stats: {len(gtfs_zone_stats)} zóna')
-
-            # gtfs_routes a hypergraph-hoz
-            st = stop_times.merge(trips[['trip_id', 'route_id']], on='trip_id')
-            st['zone_id'] = st['stop_id'].map(stop_to_zone)
-            gtfs_routes = (
-                st.groupby('route_id')['zone_id']
-                .apply(lambda x: list(set(x.dropna())))
-                .to_dict()
-            )
-            print(f'GTFS routes: {len(gtfs_routes)} vonal')
-
-        except Exception as e:
-            print(f'GTFS processing error: {e}')
+    gtfs_zone_stats, gtfs_routes = build_gtfs_from_zip(GTFS_ZIP, ZONES_SHP, zone_ids)
 
     # Modell init
     if args.model == 'gat':
