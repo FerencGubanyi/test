@@ -9,7 +9,8 @@ Használat:
 Colab:
   !python evaluate.py --model all
 """
-
+import folium
+import geopandas as gpd
 import argparse
 import os
 import numpy as np
@@ -126,7 +127,7 @@ def compute_metrics(pred_np, target_np):
     return {'MAE': mae, 'RMSE': rmse, 'R2': r2}
 
 
-def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None):
+def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None,gdf=None):
     """Model validation on bus35 scenario"""
     model, extra, in_ch, cfg = load_model(model_type, zone_ids, device)
     if model is None:
@@ -156,9 +157,18 @@ def evaluate_model(model_type, zone_ids, device, gtfs_zone_stats=None):
     print(f'  MAE:  {metrics["MAE"]:.4f}')
     print(f'  RMSE: {metrics["RMSE"]:.4f}')
     print(f'  R²:   {metrics["R2"]:.4f}')
+    pred_np = pred.cpu().numpy().flatten()
 
+    map_path = os.path.join(BASE_DIR, 'gat_prediction_map.html')
+    plot_prediction_map(
+        pred_np  = pred_np,
+        zone_ids = zone_ids,
+        gdf      = gdf,
+        save_path= map_path,
+        title    = 'GAT+LSTM - 35-ös autóbusz predikció'
+    )
     return {'model': model_type, 'pred': pred_np, 'target': target_np, **metrics}
-
+   
 
 def plot_comparison(results: list, save_dir: str):
     """Graph generation."""
@@ -227,11 +237,58 @@ if __name__ == '__main__':
 
     models_to_eval = ['gat', 'hypergraph'] if args.model == 'all' else [args.model]
 
+    gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
+    gdf['NO'] = gdf['NO'].astype(int)
+    
     results = []
     for m in models_to_eval:
-        r = evaluate_model(m, zone_ids, device, gtfs_zone_stats=gtfs_zone_stats)
+        r = evaluate_model(m, zone_ids, device, gtfs_zone_stats=gtfs_zone_stats,gdf=gdf)
         if r is not None:
             results.append(r)
 
     if len(results) > 0:
         plot_comparison(results, save_dir=BASE_DIR)
+
+def plot_prediction_map(pred_np, zone_ids, gdf, save_path, title='ΔOD Prediction'):
+    """Prediktált ΔOD choropleth térkép."""
+    
+    # Zóna szintű predikció DataFrame
+    pred_df = pd.DataFrame({
+        'NO':  zone_ids,
+        'pred': pred_np
+    })
+    
+    gdf_plot = gdf.merge(pred_df, on='NO', how='left')
+    
+    m = folium.Map(location=[47.497, 19.040], zoom_start=11,
+                   tiles='CartoDB positron')
+    
+    vmax = np.percentile(np.abs(pred_np), 95)
+    
+    folium.Choropleth(
+        geo_data    = gdf_plot.__geo_interface__,
+        data        = gdf_plot,
+        columns     = ['NO', 'pred'],
+        key_on      = 'feature.properties.NO',
+        fill_color  = 'RdBu',
+        fill_opacity= 0.7,
+        line_opacity= 0.1,
+        legend_name = 'Predicted ΔOD (passengers/day)',
+        nan_fill_color = 'lightgray'
+    ).add_to(m)
+    
+    # Tooltip
+    folium.GeoJson(
+        gdf_plot,
+        style_function = lambda x: {'fillOpacity': 0, 'weight': 0},
+        tooltip = folium.GeoJsonTooltip(
+            fields  = ['NO', 'pred'],
+            aliases = ['Zone ID:', 'Predicted ΔOD:'],
+            localize= True
+        )
+    ).add_to(m)
+    
+    m.save(save_path)
+    print(f'✅ Térkép mentve: {save_path}')
+    return m
+
