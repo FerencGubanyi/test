@@ -337,8 +337,10 @@ def run_training(args):
     if args.model == 'gat':
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
+
+    optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=1e-5
-        
+    )
     # CosineAnnealingLR: smoothly decays LR over the full training run.
     # Avoids the ReduceLROnPlateau trap where patience=5 halves LR every 5
     # epochs of no val improvement, causing LR to collapse to ~1e-5 by epoch 30
