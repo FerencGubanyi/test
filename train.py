@@ -231,10 +231,14 @@ def run_training(args):
                 from scipy.spatial import cKDTree
                 import geopandas as gpd
 
-                gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
-                gdf['NO']  = gdf['NO'].astype(int)
-                gdf['lon'] = gdf.geometry.centroid.x
-                gdf['lat'] = gdf.geometry.centroid.y
+                gdf = gpd.read_file(ZONES_SHP)
+                gdf['NO'] = gdf['NO'].astype(int)
+                # Compute centroids in projected EOV CRS (EPSG:23700) for accuracy,
+                # then convert centroid points back to WGS84 for stop_lon/stop_lat matching
+                gdf_proj    = gdf.to_crs(epsg=23700)
+                centroids   = gdf_proj.geometry.centroid.to_crs(epsg=4326)
+                gdf['lon']  = centroids.x
+                gdf['lat']  = centroids.y
 
                 with zipfile.ZipFile(GTFS_ZIP) as z:
                     stops      = pd.read_csv(z.open('stops.txt'))
@@ -307,6 +311,17 @@ def run_training(args):
         print(f'  [{s["weight"]:.1f}x] {s["name"]}')
     print(f'Validation: {val_scenario["name"]}')
 
+    # Diagnostic: print target amplitude for each real scenario so we can
+    # detect scale mismatches between train and val targets
+    print('\nTarget scale diagnostics (mean |diff| per zone):')
+    for s in train_scenarios:
+        if s['weight'] > 1.0:  # real scenarios only
+            mean_abs = s['target'].abs().mean().item()
+            print(f'  {s["name"]:30s}  mean|target|={mean_abs:.4f}')
+    mean_abs_val = val_scenario['target'].abs().mean().item()
+    std_val      = val_scenario['target'].std().item()
+    print(f'  {"[VAL] " + val_scenario["name"]:30s}  mean|target|={mean_abs_val:.4f}  std={std_val:.4f}')
+
     if args.model == 'gat':
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
@@ -314,8 +329,12 @@ def run_training(args):
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=1e-5
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5
+    # CosineAnnealingLR: smoothly decays LR over the full training run.
+    # Avoids the ReduceLROnPlateau trap where patience=5 halves LR every 5
+    # epochs of no val improvement, causing LR to collapse to ~1e-5 by epoch 30
+    # before the model has had a chance to learn.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
     )
     criterion = nn.MSELoss()
 
@@ -356,7 +375,7 @@ def run_training(args):
 
         history['val_loss'].append(val_loss)
         history['val_mae'].append(val_mae)
-        scheduler.step(val_loss)
+        scheduler.step()  # CosineAnnealingLR: step each epoch, no val_loss arg needed
 
         if val_loss < best_val_loss:
             best_val_loss    = val_loss
