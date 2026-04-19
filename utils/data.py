@@ -16,7 +16,7 @@ NUM_FEATURES_GTFS =  6
 NUM_FEATURES      = 22
 
 
-#      OD matrix loaders                  
+# ── OD matrix loaders ─────────────────────────────────────────
 
 def load_od_matrix_with_header(filepath: str) -> pd.DataFrame:
     """Load VISUM OD matrix export (3-column offset, row 0 = zone IDs)."""
@@ -53,7 +53,7 @@ def load_od_matrix_sheet(filepath: str, sheet_name: str,
     return pd.DataFrame(matrix, index=row_ids, columns=zone_ids)
 
 
-#      GTFS zone features                
+# ── GTFS zone features ────────────────────────────────────────
 
 def build_gtfs_zone_features(
     gtfs_zip_path: str,
@@ -119,11 +119,16 @@ def _map_stops_to_zones(
             import geopandas as gpd
             from pyproj import Transformer
 
-            gdf    = gpd.read_file(zones_shp_path).to_crs('EPSG:23700')
-            id_col = next(
-                c for c in gdf.columns
-                if any(k in c.lower() for k in ['no', 'id', 'zone', 'kod'])
-            )
+            gdf = gpd.read_file(zones_shp_path).to_crs('EPSG:23700')
+            # Priority: exact 'NO' → known names → partial (exclude 'fid')
+            _exact   = [c for c in gdf.columns if c.upper() == 'NO']
+            _known   = [c for c in gdf.columns
+                        if c.lower() in ('zone_id', 'zoneid', 'zone_no')]
+            _partial = [c for c in gdf.columns
+                        if any(k in c.lower() for k in ['no', 'zone', 'kod'])
+                        and c.lower() != 'fid']
+            id_col   = (_exact or _known or _partial or [gdf.columns[0]])[0]
+            print(f'  Zone ID column: {id_col}')
             gdf['_cx'] = gdf.geometry.centroid.x
             gdf['_cy'] = gdf.geometry.centroid.y
             gi = gdf.set_index(id_col)
@@ -151,7 +156,7 @@ def _map_stops_to_zones(
     return dict(zip(stops['stop_id'], [zone_ids[i] for i in idxs]))
 
 
-#      Zone feature vector              
+# ── Zone feature vector ───────────────────────────────────────
 
 def od_matrix_to_zone_features(
     od_matrix: pd.DataFrame,
@@ -201,7 +206,7 @@ def od_matrix_to_zone_features(
     return (t - t.mean(dim=0)) / (t.std(dim=0) + 1e-8)
 
 
-#      Target and scenario features           
+# ── Target and scenario features ──────────────────────────────
 
 def diff_to_target(diff_matrix: pd.DataFrame,
                    zone_ids: List[int],
