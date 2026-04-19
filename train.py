@@ -76,25 +76,13 @@ def load_all_scenarios(zone_ids, device, in_channels,
         print('M2 baseline required — aborting.')
         sys.exit(1)
 
+    # S000144 intentionally excluded:
+    # - Scenario type/content is unknown (unreliable label)
+    # - Diff amplitude (mean|target|≈85) is ~15x larger than M2/Bus35 (≈5–12),
+    #   dominating MSE loss and preventing the model from learning typical-scale
+    #   changes. Re-enable only if type is identified and amplitude is verified.
     if os.path.exists(S144_BASE_KK) and os.path.exists(S144_DIFF_KK):
-        try:
-            s144_base = load_od_matrix_no_header(S144_BASE_KK, zone_ids)
-            s144_diff = load_od_matrix_no_header(S144_DIFF_KK, zone_ids)
-            scenarios.append({
-                'name':   'S000144',
-                'weight': real_weight,
-                'x_seq': [
-                    od_matrix_to_zone_features(m2_base,   in_channels, gtfs_features).to(device),
-                    od_matrix_to_zone_features(s144_base, in_channels, gtfs_features).to(device),
-                ],
-                'scenario_feat': build_scenario_features(
-                    'metro_extension', get_affected_zones(s144_diff, zone_ids)
-                ).to(device),
-                'target': diff_to_target(s144_diff, zone_ids, device),
-            })
-            print('  ✅ S000144')
-        except Exception as e:
-            print(f'  ⚠️  S000144 load error: {e}')
+        print('  ⏭️  S000144 skipped (excluded: unknown type + amplitude outlier ~85 vs ~5–12)')
 
     if os.path.exists(M1_KK) and os.path.exists(M1_DIFF_KK):
         try:
@@ -322,11 +310,33 @@ def run_training(args):
     std_val      = val_scenario['target'].std().item()
     print(f'  {"[VAL] " + val_scenario["name"]:30s}  mean|target|={mean_abs_val:.4f}  std={std_val:.4f}')
 
+    # Per-scenario target normalisation
+    # ------------------------------------
+    # Each scenario's target is standardised (zero-mean, unit-std) before
+    # training so that no single scenario dominates the MSE loss due to
+    # amplitude differences (e.g. a large metro extension vs a small bus
+    # addition). The model learns to predict *relative* change patterns;
+    # absolute magnitudes are recovered at inference by storing target_std.
+    #
+    # Val scenario uses its own std (computed on its target vector) so the
+    # val loss is also in normalised space — making train/val loss comparable.
+    for s in all_scenarios:
+        t     = s['target']
+        t_std = t.std().clamp(min=1e-6)   # avoid div-by-zero for zero-diff scenarios
+        s['target_std']  = t_std
+        s['target']      = t / t_std       # normalised target in [-~3, ~3] range
+
+    print('\nNormalised target std per scenario (real only):')
+    for s in all_scenarios:
+        if s.get('weight', 1.0) > 1.0:
+            print(f'  {s["name"]:30s}  target_std={s["target_std"].item():.4f}')
+    print(f'  {"[VAL] " + val_scenario["name"]:30s}  target_std={val_scenario["target_std"].item():.4f}')
+
+
+
     if args.model == 'gat':
         for s in train_scenarios + [val_scenario]:
             s['edge_index'] = edge_index
-
-    optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=1e-5
     )
     # CosineAnnealingLR: smoothly decays LR over the full training run.
@@ -387,6 +397,10 @@ def run_training(args):
                 'train_losses':     history['train_loss'],
                 'val_losses':       history['val_loss'],
                 'val_maes':         history['val_mae'],
+                # target_std values needed to denormalise predictions at inference
+                'target_stds': {
+                    s['name']: s['target_std'].item() for s in all_scenarios
+                },
             }, save_path)
             print(f'  Epoch {epoch+1:3d} | '
                   f'Train: {train_loss:.4f} | '
