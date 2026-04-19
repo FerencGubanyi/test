@@ -1,13 +1,17 @@
 """
-Synthetic OD Scenario Generator
+utils/synthetic_scenarios.py
+Synthetic ΔOD matrix generator for BKK scenario augmentation.
 
-Due to the limited number of real VISUM scenarios, we generate synthetic ΔOD
-matrices based on the statistical profile of the existing M2 scenario.
+Scenario types:
+  Original (v1):
+    bus_new              — new bus route insertion
+    tram_extension       — tram line extension
+    stop_closure         — stop removal
 
-Generált típusok:
-  - bus_new:        new busline creation
-  - tram_extension: extensoin of already defined tram line
-  - stop_closure:   stop closure/openings
+  Extended (v2):
+    metro_extension      — extend an existing metro corridor by 1-3 zones
+    bus_frequency_increase — increase trip frequency (no topology change)
+    parallel_route_addition — new surface route parallel to a metro segment
 """
 
 import numpy as np
@@ -17,11 +21,11 @@ import json
 from typing import List, Dict, Tuple, Optional
 
 
+#      Statistical profile              
+
 def extract_scenario_profile(diff_matrix: pd.DataFrame,
                               scenario_type: str = 'reference') -> Dict:
-    """
-    Load data from generated scenarios
-    """
+    """Extract statistical properties from a real ΔOD matrix."""
     vals     = diff_matrix.values.flatten()
     nonzero  = vals[np.abs(vals) > 0.01]
     zone_net = diff_matrix.sum(axis=1) + diff_matrix.sum(axis=0)
@@ -41,18 +45,19 @@ def extract_scenario_profile(diff_matrix: pd.DataFrame,
         'total_net':      float(vals.sum()),
     }
 
-    print(f'Referance profil ({scenario_type}):')
+    print(f'Profile ({scenario_type}):')
     print(f'  Sparsity:       {profile["sparsity"]:.1%}')
-    print(f'  Touched zones: {profile["affected_zones"]}')
-    print(f'  Values std:      {profile["val_std"]:.3f}')
-    print(f'  Net changes: {profile["total_net"]:.1f}')
+    print(f'  Affected zones: {profile["affected_zones"]}')
+    print(f'  Value std:      {profile["val_std"]:.3f}')
     return profile
 
 
+#      Generator                   
+
 class SyntheticScenarioGenerator:
-    """Synthetic ΔOD matrix generator.
-    It preserves the statistical characteristics of the real M2 scenario,
-    but with different spatial location and strength.
+    """
+    Generates synthetic ΔOD matrices preserving the statistical
+    profile of a real VISUM scenario.
     """
 
     SIZE_PARAMS = {
@@ -70,6 +75,21 @@ class SyntheticScenarioGenerator:
             'small':  {'radius': 1.5, 'n_zones': 10, 'magnitude': -0.2},
             'medium': {'radius': 3.0, 'n_zones': 25, 'magnitude': -0.5},
             'large':  {'radius': 5.0, 'n_zones': 45, 'magnitude': -0.8},
+        },
+        'metro_extension': {
+            'small':  {'n_new': 1, 'magnitude': 0.4},
+            'medium': {'n_new': 2, 'magnitude': 0.7},
+            'large':  {'n_new': 3, 'magnitude': 1.1},
+        },
+        'bus_frequency_increase': {
+            'small':  {'freq_mult': 1.5, 'elasticity': 0.35},
+            'medium': {'freq_mult': 2.0, 'elasticity': 0.50},
+            'large':  {'freq_mult': 3.0, 'elasticity': 0.65},
+        },
+        'parallel_route_addition': {
+            'small':  {'abstraction': 0.08, 'magnitude': 0.3},
+            'medium': {'abstraction': 0.18, 'magnitude': 0.6},
+            'large':  {'abstraction': 0.28, 'magnitude': 1.0},
         },
     }
 
@@ -94,6 +114,8 @@ class SyntheticScenarioGenerator:
                 rng2.uniform(47.3, 47.7, self.n),
             ])
 
+    #      Shared helpers                
+
     def _nearby(self, center_idx: int, radius_km: float, n: int) -> np.ndarray:
         c     = self.centroids[center_idx]
         dlat  = (self.centroids[:, 1] - c[1]) * 111.0
@@ -105,25 +127,50 @@ class SyntheticScenarioGenerator:
         return self.rng.choice(within, size=min(n, len(within)), replace=False)
 
     def _enforce_conservation(self, delta: np.ndarray) -> np.ndarray:
-        """
-        Forgalommegmaradás — csak a már nem-nulla cellákban korrigál,
-        nem szórja szét az egész mátrixra.
-        """
+        """Distribute residual flow among non-zero cells only."""
         total = delta.sum()
-        nonzero_mask = np.abs(delta) > 1e-6
-        n_nonzero = nonzero_mask.sum()
-        
-        if abs(total) > 0.01 and n_nonzero > 0:
-            delta[nonzero_mask] -= total / n_nonzero
-        
+        mask  = np.abs(delta) > 1e-6
+        if abs(total) > 0.01 and mask.sum() > 0:
+            delta[mask] -= total / mask.sum()
         return delta
+
+    def _ipf_balance(self, delta: np.ndarray,
+                     baseline: Optional[np.ndarray] = None,
+                     max_iter: int = 40, tol: float = 1e-5) -> np.ndarray:
+        """
+        Iterative Proportional Fitting — enforces both row and column
+        conservation so the modified OD has the same marginals as baseline.
+        """
+        if baseline is None:
+            return self._enforce_conservation(delta)
+
+        modified = np.maximum(baseline + delta, 0.0)
+        np.fill_diagonal(modified, 0.0)
+        O = baseline.sum(axis=1)
+        D = baseline.sum(axis=0)
+
+        for _ in range(max_iter):
+            rs = modified.sum(axis=1)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                modified *= np.where(rs > 1e-9, O / rs, 1.0)[:, None]
+            np.fill_diagonal(modified, 0.0)
+
+            cs = modified.sum(axis=0)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                modified *= np.where(cs > 1e-9, D / cs, 1.0)[None, :]
+            np.fill_diagonal(modified, 0.0)
+
+            if (np.abs(modified.sum(axis=1) - O).max() < tol and
+                    np.abs(modified.sum(axis=0) - D).max() < tol):
+                break
+
+        return modified - baseline
+
+    #      v1 scenario types               
 
     def generate_bus_new(self, scenario_id: int,
                           size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Simulation of the impact of a new bus line.
-        Traffic increases between the affected zones, with a small shift from parallel ines.
-        """
+        """New bus route — increases flow between affected zones."""
         p          = self.SIZE_PARAMS['bus_new'][size]
         center_idx = self.rng.integers(0, self.n)
         affected   = self._nearby(center_idx, p['radius'], p['n_zones'])
@@ -150,9 +197,7 @@ class SyntheticScenarioGenerator:
 
     def generate_tram_extension(self, scenario_id: int,
                                  size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Simulation of tram line extension.
-        """
+        """Tram line extension along a directed corridor."""
         p         = self.SIZE_PARAMS['tram_extension'][size]
         start_idx = self.rng.integers(0, self.n)
         angle     = self.rng.uniform(0, 2 * np.pi)
@@ -174,7 +219,9 @@ class SyntheticScenarioGenerator:
         for i in corridor:
             for j in corridor:
                 if i != j:
-                    end_dist = np.linalg.norm(self.centroids[i] - self.centroids[stop_indices[-1]])
+                    end_dist = np.linalg.norm(
+                        self.centroids[i] - self.centroids[stop_indices[-1]]
+                    )
                     strength = scale * np.exp(-end_dist * 5)
                     delta[i, j] += self.rng.normal(strength, max(strength * 0.25, 1e-6))
 
@@ -191,11 +238,7 @@ class SyntheticScenarioGenerator:
 
     def generate_stop_closure(self, scenario_id: int,
                                size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Simulation of a stop closure.
-        Negative local impact, some of the traffic is transferred
-        to neighboring stops.
-        """
+        """Stop closure — negative local impact, partial transfer to border zones."""
         p          = self.SIZE_PARAMS['stop_closure'][size]
         center_idx = self.rng.integers(0, self.n)
         affected   = self._nearby(center_idx, p['radius'], p['n_zones'])
@@ -227,29 +270,212 @@ class SyntheticScenarioGenerator:
         }
         return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
 
-    def generate_batch(self, n_per_type: int = 3) -> List[Tuple[pd.DataFrame, Dict]]:
-        """n_per_type scenario generation (small/medium/large)."""
-        sizes   = ['small', 'medium', 'large']
+    #      v2 scenario types               
+
+    def generate_metro_extension(self, scenario_id: int,
+                                  size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
+        """
+        Extend an existing metro corridor by 1-3 new terminal zones.
+        New zones gain inflow from the corridor; bus alternatives lose flow.
+        Uses IPF double-balancing for conservation.
+        """
+        p = self.SIZE_PARAMS['metro_extension'][size]
+
+        # Select a long corridor (metro proxy: top-quartile by zone spread)
+        all_zones = list(range(self.n))
+        corridor_size = self.rng.integers(8, max(9, self.n // 5))
+        start = self.rng.integers(0, self.n)
+        corridor = self._nearby(start, 8.0, int(corridor_size)).tolist()
+        if len(corridor) < 3:
+            corridor = list(range(min(10, self.n)))
+
+        non_corridor = [z for z in all_zones if z not in set(corridor)]
+        n_new = min(p['n_new'], len(non_corridor))
+        if n_new == 0:
+            return self._empty(f'syn_metro_ext_{size}_{scenario_id:02d}',
+                               'metro_extension', size)
+
+        anchor = corridor[-1]
+        dists  = np.abs(np.array(non_corridor) - anchor)
+        probs  = 1.0 / (dists + 1.0)
+        probs /= probs.sum()
+        new_zones = self.rng.choice(non_corridor, size=n_new, replace=False, p=probs)
+
+        magnitude = self.profile['val_std'] * p['magnitude']
+        delta = np.zeros((self.n, self.n))
+
+        for new_z in new_zones:
+            # Inflow increase to new zone from corridor
+            attr = np.abs(np.arange(len(corridor)) - len(corridor)) + 1.0
+            weights = attr / attr.sum()
+            for src_z, w in zip(corridor, weights):
+                gain = magnitude * w + self.rng.exponential(0.5)
+                delta[src_z, new_z] += gain
+                alts = [z for z in corridor if z != src_z and z != new_z]
+                if alts:
+                    delta[src_z, self.rng.choice(alts)] -= gain
+
+            # Modal shift away from bus alternatives
+            bus_alts = [z for z in non_corridor if z != new_z]
+            if bus_alts:
+                n_bus = min(3, len(bus_alts))
+                chosen = self.rng.choice(bus_alts, size=n_bus, replace=False)
+                loss_each = magnitude * 0.4 / n_bus
+                for bz in chosen:
+                    delta[new_z, bz] -= loss_each
+                    delta[new_z, self.rng.choice(corridor)] += loss_each
+
+        delta = self._enforce_conservation(delta)
+        meta  = {
+            'scenario_id':    f'syn_metro_ext_{size}_{scenario_id:02d}',
+            'type':           'metro_extension',
+            'size':           size,
+            'corridor_zones': [int(self.zone_ids[i]) for i in corridor],
+            'affected_zones': [int(self.zone_ids[i]) for i in new_zones],
+            'n_affected':     len(corridor) + len(new_zones),
+        }
+        return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
+
+    def generate_bus_frequency_increase(
+            self, scenario_id: int,
+            size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
+        """
+        Increase trip frequency on a bus corridor — no topology change.
+        Induced demand scales with frequency elasticity (Balcombe et al., 2004).
+        """
+        p = self.SIZE_PARAMS['bus_frequency_increase'][size]
+        demand_increase = p['elasticity'] * (p['freq_mult'] - 1.0)
+
+        # Select a short corridor (bus proxy)
+        center_idx  = self.rng.integers(0, self.n)
+        corridor    = self._nearby(center_idx, 4.0, 20).tolist()
+        corr_set    = set(corridor)
+        non_corr    = [z for z in range(self.n) if z not in corr_set]
+
+        delta = np.zeros((self.n, self.n))
+        for i, z_o in enumerate(corridor):
+            for z_d in corridor[i + 1:]:
+                for zo, zd in [(z_o, z_d), (z_d, z_o)]:
+                    gain = self.profile['val_std'] * demand_increase * \
+                           self.rng.uniform(0.8, 1.2)
+                    delta[zo, zd] += gain
+                    if non_corr:
+                        bleed = self.rng.choice(non_corr)
+                        delta[zo, bleed] -= gain * 0.25
+
+        delta = self._enforce_conservation(delta)
+        meta  = {
+            'scenario_id':    f'syn_bus_freq_{size}_{scenario_id:02d}',
+            'type':           'bus_frequency_increase',
+            'size':           size,
+            'center_zone':    int(self.zone_ids[center_idx]),
+            'corridor_zones': [int(self.zone_ids[i]) for i in corridor],
+            'n_affected':     len(corridor),
+        }
+        return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
+
+    def generate_parallel_route_addition(
+            self, scenario_id: int,
+            size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
+        """
+        Add a surface route parallel to a metro segment.
+        Models modal competition: metro loses demand, exclusive zones gain.
+        """
+        p = self.SIZE_PARAMS['parallel_route_addition'][size]
+
+        # Metro-like corridor
+        start = self.rng.integers(0, self.n)
+        metro = self._nearby(start, 8.0, self.rng.integers(8, 16)).tolist()
+        if len(metro) < 4:
+            metro = list(range(min(12, self.n)))
+
+        n_parallel = max(2, len(metro) // 2)
+        seg_start  = self.rng.integers(0, len(metro) - n_parallel)
+        parallel   = metro[seg_start: seg_start + n_parallel]
+
+        non_metro  = [z for z in range(self.n) if z not in set(metro)]
+        n_excl     = self.rng.integers(2, 6)
+        exclusive  = (self.rng.choice(non_metro, size=min(n_excl, len(non_metro)),
+                                      replace=False).tolist()
+                      if non_metro else [])
+
+        magnitude    = self.profile['val_std'] * p['magnitude']
+        suppression  = p['abstraction'] * 0.25
+        delta = np.zeros((self.n, self.n))
+
+        # Modal abstraction on metro-served pairs
+        for i, z_o in enumerate(parallel):
+            for z_d in parallel[i + 1:]:
+                for zo, zd in [(z_o, z_d), (z_d, z_o)]:
+                    suppress = self.profile['val_std'] * suppression
+                    delta[zo, zd] -= suppress
+                    if exclusive:
+                        delta[zo, self.rng.choice(exclusive)] += suppress * 0.6
+
+        # New demand from exclusive zones
+        for excl_z in exclusive:
+            for seg_z in parallel:
+                for zo, zd in [(seg_z, excl_z), (excl_z, seg_z)]:
+                    gain = magnitude * self.rng.uniform(0.5, 1.5) + 0.5
+                    delta[zo, zd] += gain
+                    non_par = [z for z in range(self.n)
+                               if z not in set(parallel + exclusive) and z != zo]
+                    if non_par:
+                        delta[zo, self.rng.choice(non_par)] -= gain * 0.7
+
+        delta = self._enforce_conservation(delta)
+        all_affected = parallel + exclusive
+        meta  = {
+            'scenario_id':    f'syn_parallel_{size}_{scenario_id:02d}',
+            'type':           'parallel_route_addition',
+            'size':           size,
+            'corridor_zones': [int(self.zone_ids[i]) for i in parallel],
+            'affected_zones': [int(self.zone_ids[i]) for i in exclusive],
+            'n_affected':     len(all_affected),
+        }
+        return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
+
+    def _empty(self, scenario_id, stype, size) -> Tuple[pd.DataFrame, Dict]:
+        """Return a zero delta for degenerate edge cases."""
+        delta = np.zeros((self.n, self.n))
+        meta  = {'scenario_id': scenario_id, 'type': stype, 'size': size,
+                 'affected_zones': [], 'n_affected': 0}
+        return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
+
+    #      Batch generation                 
+
+    def generate_batch(self, n_per_type: int = 30) -> List[Tuple[pd.DataFrame, Dict]]:
+        """
+        Generate n_per_type scenarios for each of the 6 types.
+        Sizes cycle: small / medium / large.
+        """
+        sizes = ['small', 'medium', 'large']
+        generators = {
+            'bus_new':                 self.generate_bus_new,
+            'tram_extension':          self.generate_tram_extension,
+            'stop_closure':            self.generate_stop_closure,
+            'metro_extension':         self.generate_metro_extension,
+            'bus_frequency_increase':  self.generate_bus_frequency_increase,
+            'parallel_route_addition': self.generate_parallel_route_addition,
+        }
         results = []
         counter = 0
-        gens = {
-            'bus_new':        self.generate_bus_new,
-            'tram_extension': self.generate_tram_extension,
-            'stop_closure':   self.generate_stop_closure,
-        }
-        print(f'Syntetic scenario generation ({n_per_type} × {len(gens)} type)...')
-        for type_name, fn in gens.items():
+        print(f'Generating {n_per_type} x {len(generators)} = '
+              f'{n_per_type * len(generators)} synthetic scenarios...')
+        for type_name, fn in generators.items():
             for i in range(n_per_type):
                 diff, meta = fn(counter, sizes[i % len(sizes)])
                 results.append((diff, meta))
                 counter += 1
-                print(f'  ✅ {meta["scenario_id"]} — {meta["n_affected"]} effected zone')
+            print(f'  {type_name}: {n_per_type} done')
         return results
 
 
+#      Validation                 
+
 def validate_synthetic(real_diff: pd.DataFrame,
                         synthetic_diffs: List[pd.DataFrame]) -> pd.DataFrame:
-    """Statistical comparison: real vs synthetic scenarios."""
+    """Compare statistical properties of real vs synthetic ΔOD matrices."""
     def stats(df, name):
         v  = df.values.flatten()
         nz = v[np.abs(v) > 0.01]
@@ -269,25 +495,32 @@ def validate_synthetic(real_diff: pd.DataFrame,
     return pd.DataFrame(rows).set_index('scenario')
 
 
-def save_scenarios(scenarios: List[Tuple[pd.DataFrame, Dict]], output_dir: str):
+#      Save / load                    
+
+def save_scenarios(scenarios: List[Tuple[pd.DataFrame, Dict]],
+                   output_dir: str):
+    """Save ΔOD matrices as CSV files with a metadata.json index."""
     os.makedirs(output_dir, exist_ok=True)
     for diff, meta in scenarios:
         diff.to_csv(os.path.join(output_dir, f'{meta["scenario_id"]}_diff.csv'))
     with open(os.path.join(output_dir, 'metadata.json'), 'w') as f:
         json.dump([m for _, m in scenarios], f, indent=2, ensure_ascii=False)
-    print(f'✅ {len(scenarios)} scenario saved: {output_dir}')
+    print(f'Saved {len(scenarios)} scenarios to {output_dir}')
 
 
-def load_scenarios(output_dir: str, zone_ids: List[int]) -> List[Tuple[pd.DataFrame, Dict]]:
+def load_scenarios(output_dir: str,
+                   zone_ids: List[int]) -> List[Tuple[pd.DataFrame, Dict]]:
+    """Load scenarios saved by save_scenarios()."""
     with open(os.path.join(output_dir, 'metadata.json')) as f:
         metas = json.load(f)
     results = []
     for meta in metas:
         diff = pd.read_csv(
-            os.path.join(output_dir, f'{meta["scenario_id"]}_diff.csv'), index_col=0
+            os.path.join(output_dir, f'{meta["scenario_id"]}_diff.csv'),
+            index_col=0
         )
         diff.index   = diff.index.astype(int)
         diff.columns = diff.columns.astype(int)
         results.append((diff, meta))
-    print(f'✅ {len(results)} scenario loaded')
+    print(f'Loaded {len(results)} scenarios')
     return results

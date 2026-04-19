@@ -5,15 +5,15 @@
 
 ```
 bkk_thesis/
-├── config/paths.py         
-├── models/
-│   ├── gat_lstm.py         
-│   └── hypergraph_lstm.py   
-├── utils/
-│   ├── data.py              
-│   └── synthetic_scenarios.py
-├── train.py                
-└── evaluate.py             
+├     config/paths.py         
+├     models/
+│   ├     gat_lstm.py         
+│   └     hypergraph_lstm.py   
+├     utils/
+│   ├     data.py              
+│   └     synthetic_scenarios.py
+├     train.py                
+└     evaluate.py             
 ```
 
 
