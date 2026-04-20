@@ -9,6 +9,33 @@ Predicts zone-level passenger flow redistribution in Budapest's public transit n
 
 ## Project Structure
 ---
+test/
+├── config/
+│   └── paths.py                  # Colab / local path switching
+├── models/
+│   ├── gat_lstm.py               # GAT + LSTM architecture
+│   └── hypergraph_lstm.py        # Hypergraph Neural Net + LSTM
+├── utils/
+│   ├── data.py                   # OD matrix parsing, GTFS features
+│   └── synthetic_scenarios.py    # Synthetic scenario generator
+├── db/
+│   ├── __init__.py
+│   └── init_db.py                # SQLite inference history layer
+├── tests/
+│   ├── conftest.py               # Shared fixtures
+│   ├── pytest.ini
+│   ├── test_models.py
+│   ├── test_data.py
+│   ├── test_scenarios.py
+│   └── test_app.py
+├── checkpoints/                  
+│   ├── gat_lstm_best.pt
+│   └── hypergraph_lstm_best.pt
+├── data/                         # VISUM OD exports, GTFS, shapefiles (git-ignored)
+├── streamlit.py                  # Inference frontend
+├── train.py                      # Training entry point
+├── evaluate.py                   # Evaluation entry point
+└── requirements.txt
 
 ## Architectures
 
