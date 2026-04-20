@@ -50,6 +50,13 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# DB layer
+try:
+    from db.init_db import get_db, save_run, load_runs, load_zone_results, delete_run
+    _HAS_DB = True
+except ImportError:
+    _HAS_DB = False
+
 #  
 # PAGE CONFIG
 #  
@@ -586,6 +593,16 @@ with st.sidebar:
         help="BKK TAZ zone polygons for choropleth map. Optional.",
     )
 
+    #      Scenario label     
+    st.markdown('<div class="section-title">Scenario Label</div>', unsafe_allow_html=True)
+    scenario_name = st.text_input(
+        "Scenario name",
+        value="",
+        placeholder="e.g. M2 extension, Bus 35 closure…",
+        label_visibility="collapsed",
+        help="Optional label saved to the inference history database.",
+    )
+
     #      Display options     
     st.markdown('<div class="section-title">Display</div>', unsafe_allow_html=True)
     show_stops = st.toggle("Stop-level disaggregation", value=False,
@@ -681,6 +698,13 @@ if "delta_od" not in st.session_state:
     st.session_state.od_matrix = None
     st.session_state.inference_time_ms = None
     st.session_state.n_zones = None
+    st.session_state.last_run_id = None
+
+# DB connection (cached for the session)
+if _HAS_DB:
+    if "_db" not in st.session_state:
+        from db.init_db import get_db
+        st.session_state._db = get_db()
 
 if run_btn:
     with st.spinner(f"Loading {model_choice} checkpoint..."):
@@ -720,7 +744,28 @@ if run_btn:
         st.session_state.od_matrix         = od_matrix
         st.session_state.inference_time_ms = elapsed_ms
         st.session_state.n_zones           = N
-        st.success(f"Inference complete in {elapsed_ms:.1f} ms")
+
+        # ── Persist to SQLite ──
+        if _HAS_DB:
+            try:
+                run_id = save_run(
+                    conn=st.session_state._db,
+                    model_type=model_choice,
+                    delta_od=delta_od,
+                    zone_ids=zone_ids,
+                    scenario_name=scenario_name.strip() or "(unnamed)",
+                    inference_ms=elapsed_ms,
+                    checkpoint_path=ckpt_path,
+                )
+                st.session_state.last_run_id = run_id
+                st.success(f"Inference complete in {elapsed_ms:.1f} ms — saved as run #{run_id}")
+            except Exception as _db_err:
+                st.session_state.last_run_id = None
+                st.success(f"Inference complete in {elapsed_ms:.1f} ms")
+                st.warning(f"DB save failed: {_db_err}")
+        else:
+            st.session_state.last_run_id = None
+            st.success(f"Inference complete in {elapsed_ms:.1f} ms")
 
 #  
 # STEP 3 — Results
@@ -961,3 +1006,83 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────
+# INFERENCE HISTORY
+# ──────────────────────────────────────────────────────────────
+
+st.markdown("---")
+st.markdown('<div class="section-title">Inference History</div>', unsafe_allow_html=True)
+
+if not _HAS_DB:
+    st.info("DB layer not available — install db/init_db.py dependencies.")
+else:
+    db = st.session_state._db
+    runs_df = load_runs(db)
+
+    if runs_df.empty:
+        st.markdown(
+            "<div style='color:#8B949E; font-size:0.85rem;'>No runs saved yet.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        # Display table
+        display_cols = [
+            "id", "datetime", "scenario_name", "model_type",
+            "n_zones", "inference_ms",
+            "n_gaining_zones", "n_losing_zones",
+            "max_gain", "max_loss",
+        ]
+        display_cols = [c for c in display_cols if c in runs_df.columns]
+
+        st.dataframe(
+            runs_df[display_cols].rename(columns={
+                "id":               "Run #",
+                "datetime":         "Time (Budapest)",
+                "scenario_name":    "Scenario",
+                "model_type":       "Model",
+                "n_zones":          "Zones",
+                "inference_ms":     "ms",
+                "n_gaining_zones":  "↑ Zones",
+                "n_losing_zones":   "↓ Zones",
+                "max_gain":         "Max gain",
+                "max_loss":         "Max loss",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # Per-run zone detail expander
+        run_ids = runs_df["id"].tolist()
+        selected_id = st.selectbox(
+            "Inspect zone-level results for run",
+            options=run_ids,
+            format_func=lambda i: f"#{i} — {runs_df.loc[runs_df['id']==i, 'scenario_name'].values[0]}",
+        )
+        if selected_id:
+            with st.expander(f"Zone results — run #{selected_id}", expanded=False):
+                z_df = load_zone_results(db, selected_id)
+                if z_df.empty:
+                    st.write("No zone data.")
+                else:
+                    st.dataframe(z_df, use_container_width=True, hide_index=True)
+                    csv = z_df.to_csv(index=False).encode()
+                    st.download_button(
+                        "⬇ Download CSV",
+                        data=csv,
+                        file_name=f"run_{selected_id}_zones.csv",
+                        mime="text/csv",
+                    )
+
+        # Delete
+        with st.expander("🗑 Delete a run", expanded=False):
+            del_id = st.selectbox(
+                "Run to delete",
+                options=run_ids,
+                format_func=lambda i: f"#{i} — {runs_df.loc[runs_df['id']==i, 'scenario_name'].values[0]}",
+                key="del_select",
+            )
+            if st.button("Delete run", type="secondary"):
+                delete_run(db, del_id)
+                st.success(f"Run #{del_id} deleted.")
+                st.rerun()
