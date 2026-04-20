@@ -1,3 +1,13 @@
+# BKK Passenger Flow Redistribution Predictor
+
+MSc thesis — Óbudai Egyetem, Pénzügyi Technológiák, 2024–25  
+Supervisor: Sipos Miklós László
+
+Predicts zone-level passenger flow redistribution in Budapest's public transit network following infrastructure changes (new stops, route extensions, closures) using two deep learning architectures trained on BKK EFM VISUM scenario OD matrix exports.
+
+---
+
+## Project Structure
 ---
 
 ## Architectures
