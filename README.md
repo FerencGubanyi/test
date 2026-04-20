@@ -9,6 +9,7 @@ Predicts zone-level passenger flow redistribution in Budapest's public transit n
 
 ## Project Structure
 ---
+```
 test/
 ├── config/
 │   └── paths.py                  # Colab / local path switching
@@ -36,7 +37,7 @@ test/
 ├── train.py                      # Training entry point
 ├── evaluate.py                   # Evaluation entry point
 └── requirements.txt
-
+```
 ## Architectures
 
 **GAT+LSTM** — Zone adjacency graph → multi-head graph attention → LSTM → ΔOD  
