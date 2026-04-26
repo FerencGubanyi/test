@@ -1,59 +1,140 @@
-# BKK Thesis work
+# BKK Passenger Flow Redistribution Predictor
 
+MSc thesis
+Supervisor: Sipos Miklós László
 
-## Structure
+Predicts zone-level passenger flow redistribution in Budapest's public transit network following infrastructure changes (new stops, route extensions, closures) using two deep learning architectures trained on BKK EFM VISUM scenario OD matrix exports.
 
+---
+
+## Project Structure
+---
 ```
-bkk_thesis/
-├     config/paths.py         
-├     models/
-│   ├     gat_lstm.py         
-│   └     hypergraph_lstm.py   
-├     utils/
-│   ├     data.py              
-│   └     synthetic_scenarios.py
-├     train.py                
-└     evaluate.py             
+test/
+├── config/
+│   └── paths.py                  # Colab / local path switching
+├── models/
+│   ├── gat_lstm.py               # GAT + LSTM architecture
+│   └── hypergraph_lstm.py        # Hypergraph Neural Net + LSTM
+├── utils/
+│   ├── data.py                   # OD matrix parsing, GTFS features
+│   └── synthetic_scenarios.py    # Synthetic scenario generator
+├── db/
+│   ├── __init__.py
+│   └── init_db.py                # SQLite inference history layer
+├── tests/
+│   ├── conftest.py               # Shared fixtures
+│   ├── pytest.ini
+│   ├── test_models.py
+│   ├── test_data.py
+│   ├── test_scenarios.py
+│   └── test_app.py
+├── checkpoints/                  
+│   ├── gat_lstm_best.pt
+│   └── hypergraph_lstm_best.pt
+├── data/                         # VISUM OD exports, GTFS, shapefiles (git-ignored)
+├── streamlit.py                  # Inference frontend
+├── train.py                      # Training entry point
+├── evaluate.py                   # Evaluation entry point
+└── requirements.txt
+```
+## Architectures
+
+**GAT+LSTM** — Zone adjacency graph → multi-head graph attention → LSTM → ΔOD  
+**Hypergraph+LSTM** — BKK transit lines as hyperedges → HGNN (Feng et al. 2019) → LSTM → ΔOD
+
+---
+
+## Local Setup
+
+```bash
+git clone https://github.com/FerencGubanyi/test.git
+cd test
+pip install -r requirements.txt
 ```
 
+> **Note:** `torch-geometric` may need a separate install matching your CUDA version.  
+> See https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
 
-### Google Colab
+### Training
+
+```bash
+python train.py --model gat --epochs 300 --lr 5e-4 --patience 30
+python train.py --model hypergraph --epochs 300 --lr 5e-4 --patience 30
+```
+
+### Evaluation
+
+```bash
+python evaluate.py --model all
+```
+
+### Streamlit App
+
+```bash
+streamlit run streamlit.py
+```
+
+The app runs in **demo mode** if no checkpoint is found — it generates a synthetic OD matrix so the UI is fully usable without trained weights.
+
+Every inference run is automatically saved to `db/inference.db` (SQLite).  
+The **Inference History** section at the bottom of the app lets you browse, inspect, and export past runs.
+
+### Tests
+
+```bash
+# All tests
+pytest
+
+# Skip slow tests
+pytest -m "not slow"
+
+# Single module
+pytest tests/test_models.py -v
+```
+
+---
+
+## Google Colab (GPU Training)
+
 ```python
-!git clone https://github.com/username/test.git
+!git clone https://github.com/FerencGubanyi/test.git
 %cd test
 !pip install -r requirements.txt
 
 from google.colab import drive
 drive.mount('/content/drive')
 
-# Training
-!python train.py --model gat
-!python train.py --model hypergraph
-
-# Evaluation
+!python train.py --model gat --epochs 300 --patience 30
+!python train.py --model hypergraph --epochs 300 --patience 30
 !python evaluate.py --model all
 ```
 
-### Local VS Code
-```bash
-git clone https://github.com/USERNAME/bkk_thesis.git
-cd bkk_thesis
-pip install -r requirements.txt
+Checkpoints mentése Drive-ra:
 
-python train.py --model gat --epochs 100
-python evaluate.py --model all
+```python
+import shutil
+shutil.copy("checkpoints/gat_lstm_best.pt", "/content/drive/MyDrive/bkk_checkpoints/")
+shutil.copy("checkpoints/hypergraph_lstm_best.pt", "/content/drive/MyDrive/bkk_checkpoints/")
 ```
 
 ---
 
-## Datas from Google Drive 
+## Data
 
+OD matrix Excel exports from BKK EFM VISUM.  
+Expected format: zone IDs in row 0 starting at column 3, flow data from row 3.
+
+Real VISUM scenarios:
+- M1 metro extension
+- M2 metro extension
+- Bus 35 Pesterzsébet *(validation set)*
+
+Synthetic scenarios (90 total): `bus_new`, `tram_extension`, `stop_closure`
 
 ---
 
-## Architectures
+## References
 
-**GAT+LSTM**: Zone neighbouring graph → multi-head attention → LSTM → ΔOD  
-**Hypergraph+LSTM**: BKK lines like hyperedges → HGNN → LSTM → ΔOD  
-
-Cource: Feng et al. (2019) — Hypergraph Neural Networks
+- Feng et al. (2019) — *Hypergraph Neural Networks*
+- Wang et al. (2021) — *Dynamic Hypergraph Convolution for metro flow prediction*
