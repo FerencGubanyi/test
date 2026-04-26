@@ -124,7 +124,7 @@ def load_model(model_type: str, zone_ids, device, gtfs_features=None):
         print(f'  Run: python train.py --model {model_type}')
         return None, None, None
 
-    ckpt = torch.load(checkpoint, map_location=device)
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
         model.load_state_dict(ckpt['model_state_dict'])
         print(f'  Best epoch     : {ckpt.get("best_epoch", "?")}')
