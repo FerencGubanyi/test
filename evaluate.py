@@ -215,6 +215,12 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
     x_seq_cpu         = [x.cpu() for x in x_seq]
     scenario_feat_cpu = scenario_feat.cpu()
 
+    # Move hypergraph internal tensors to CPU too
+    if model_type == 'hypergraph' and hasattr(model_cpu, 'H'):
+        model_cpu.H            = model_cpu.H.cpu()
+        model_cpu.D_v_inv_sqrt = model_cpu.D_v_inv_sqrt.cpu()
+        model_cpu.D_e_inv      = model_cpu.D_e_inv.cpu()
+
     if model_type == 'gat':
         edge_index_cpu = extra['edge_index'].cpu()
         _call = lambda: model_cpu(x_seq_cpu, edge_index_cpu, scenario_feat_cpu)
