@@ -123,37 +123,73 @@ class SyntheticScenarioGenerator:
                      baseline: Optional[np.ndarray] = None,
                      max_iter: int = 40, tol: float = 1e-5) -> np.ndarray:
         """
-        Iterative Proportional Fitting — enforces both row and column
-        conservation so the modified OD has the same marginals as baseline.
+        Iterative Proportional Fitting on the AFFECTED submatrix only.
+
+        Instead of forcing the full OD matrix back to baseline marginals
+        (which zeroes out the delta), we:
+        1. Identify affected rows/cols (where |delta| > threshold)
+        2. Apply IPF only on that submatrix
+        3. Scale the resulting delta to match the real scenario amplitude
+
         Falls back to _enforce_conservation if no baseline is available.
         """
         bl = baseline if baseline is not None else self.baseline
         if bl is None:
             return self._enforce_conservation(delta)
 
-        modified = np.maximum(bl + delta, 0.0)
-        np.fill_diagonal(modified, 0.0)
-        O = bl.sum(axis=1)
-        D = bl.sum(axis=0)
+        # Find affected zones (rows or cols with non-trivial delta)
+        row_impact = np.abs(delta).sum(axis=1)
+        col_impact = np.abs(delta).sum(axis=0)
+        threshold  = np.percentile(
+            np.concatenate([row_impact, col_impact]),
+            85  # top 15% most affected
+        )
+        aff_rows = np.where(row_impact > threshold)[0]
+        aff_cols = np.where(col_impact > threshold)[0]
+        aff      = np.union1d(aff_rows, aff_cols)
+
+        if len(aff) < 2:
+            return self._enforce_conservation(delta)
+
+        # Apply IPF on the affected submatrix
+        sub_bl  = bl[np.ix_(aff, aff)]
+        sub_d   = delta[np.ix_(aff, aff)]
+        sub_mod = np.maximum(sub_bl + sub_d, 0.0)
+        np.fill_diagonal(sub_mod, 0.0)
+
+        O = sub_bl.sum(axis=1)
+        D = sub_bl.sum(axis=0)
 
         for _ in range(max_iter):
-            rs = modified.sum(axis=1)
+            rs = sub_mod.sum(axis=1)
             with np.errstate(invalid='ignore', divide='ignore'):
-                modified *= np.where(rs > 1e-9, O / rs, 1.0)[:, None]
-            np.fill_diagonal(modified, 0.0)
-            cs = modified.sum(axis=0)
+                sub_mod *= np.where(rs > 1e-9, O / rs, 1.0)[:, None]
+            np.fill_diagonal(sub_mod, 0.0)
+            cs = sub_mod.sum(axis=0)
             with np.errstate(invalid='ignore', divide='ignore'):
-                modified *= np.where(cs > 1e-9, D / cs, 1.0)[None, :]
-            np.fill_diagonal(modified, 0.0)
-            if (np.abs(modified.sum(axis=1) - O).max() < tol and
-                    np.abs(modified.sum(axis=0) - D).max() < tol):
+                sub_mod *= np.where(cs > 1e-9, D / cs, 1.0)[None, :]
+            np.fill_diagonal(sub_mod, 0.0)
+            if (np.abs(sub_mod.sum(axis=1) - O).max() < tol and
+                    np.abs(sub_mod.sum(axis=0) - D).max() < tol):
                 break
 
-        return modified - bl
+        sub_delta = sub_mod - sub_bl
+
+        # Scale sub_delta amplitude to match real scenario profile
+        # profile['val_std'] is from the real M2 diff — use it as amplitude target
+        target_std = self.profile.get('val_std', 1.0)
+        current_std = sub_delta.std()
+        if current_std > 1e-9:
+            sub_delta = sub_delta * (target_std / current_std)
+
+        # Write back to full delta
+        result = self._enforce_conservation(delta.copy())
+        result[np.ix_(aff, aff)] = sub_delta
+        return self._enforce_conservation(result)
 
     def _finalize(self, delta: np.ndarray) -> np.ndarray:
         """
-        Apply IPF balancing with the stored baseline OD matrix.
+        Apply submatrix IPF balancing with amplitude scaling.
         If no baseline was provided at init, falls back to simple conservation.
         Called at the end of every scenario generator.
         """
