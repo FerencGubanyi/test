@@ -2,16 +2,11 @@
 utils/synthetic_scenarios.py
 Synthetic ΔOD matrix generator for BKK scenario augmentation.
 
-Scenario types:
-  Original (v1):
-    bus_new              — new bus route insertion
-    tram_extension       — tram line extension
-    stop_closure         — stop removal
-
-  Extended (v2):
-    metro_extension      — extend an existing metro corridor by 1-3 zones
-    bus_frequency_increase — increase trip frequency (no topology change)
-    parallel_route_addition — new surface route parallel to a metro segment
+Key improvement over v1: all generators now use _ipf_balance() with the
+baseline OD matrix instead of the simpler _enforce_conservation(). This
+enforces proper row AND column marginal conservation (same trip totals per
+zone as baseline), producing synthetic deltas that are structurally closer
+to real VISUM outputs.
 """
 
 import numpy as np
@@ -21,16 +16,12 @@ import json
 from typing import List, Dict, Tuple, Optional
 
 
-#      Statistical profile              
-
 def extract_scenario_profile(diff_matrix: pd.DataFrame,
                               scenario_type: str = 'reference') -> Dict:
-    """Extract statistical properties from a real ΔOD matrix."""
     vals     = diff_matrix.values.flatten()
     nonzero  = vals[np.abs(vals) > 0.01]
     zone_net = diff_matrix.sum(axis=1) + diff_matrix.sum(axis=0)
-
-    profile = {
+    profile  = {
         'scenario_type':  scenario_type,
         'n_zones':        diff_matrix.shape[0],
         'sparsity':       1 - len(nonzero) / len(vals),
@@ -44,7 +35,6 @@ def extract_scenario_profile(diff_matrix: pd.DataFrame,
         'affected_zones': int((zone_net.abs() > zone_net.abs().quantile(0.8)).sum()),
         'total_net':      float(vals.sum()),
     }
-
     print(f'Profile ({scenario_type}):')
     print(f'  Sparsity:       {profile["sparsity"]:.1%}')
     print(f'  Affected zones: {profile["affected_zones"]}')
@@ -52,13 +42,7 @@ def extract_scenario_profile(diff_matrix: pd.DataFrame,
     return profile
 
 
-#      Generator                   
-
 class SyntheticScenarioGenerator:
-    """
-    Generates synthetic ΔOD matrices preserving the statistical
-    profile of a real VISUM scenario.
-    """
 
     SIZE_PARAMS = {
         'bus_new': {
@@ -94,12 +78,15 @@ class SyntheticScenarioGenerator:
     }
 
     def __init__(self, zone_ids: List[int], profile: Dict,
+                 baseline: Optional[np.ndarray] = None,
                  gdf=None, seed: int = 42):
         self.zone_ids    = zone_ids
         self.n           = len(zone_ids)
         self.profile     = profile
         self.rng         = np.random.default_rng(seed)
         self.zone_to_idx = {z: i for i, z in enumerate(zone_ids)}
+        # Baseline OD matrix — passed to _ipf_balance for proper conservation
+        self.baseline    = baseline
 
         if gdf is not None:
             gi = gdf.set_index('NO')
@@ -114,8 +101,6 @@ class SyntheticScenarioGenerator:
                 rng2.uniform(47.3, 47.7, self.n),
             ])
 
-    #      Shared helpers                
-
     def _nearby(self, center_idx: int, radius_km: float, n: int) -> np.ndarray:
         c     = self.centroids[center_idx]
         dlat  = (self.centroids[:, 1] - c[1]) * 111.0
@@ -127,7 +112,7 @@ class SyntheticScenarioGenerator:
         return self.rng.choice(within, size=min(n, len(within)), replace=False)
 
     def _enforce_conservation(self, delta: np.ndarray) -> np.ndarray:
-        """Distribute residual flow among non-zero cells only."""
+        """Fallback: distribute residual among non-zero cells."""
         total = delta.sum()
         mask  = np.abs(delta) > 1e-6
         if abs(total) > 0.01 and mask.sum() > 0:
@@ -140,37 +125,42 @@ class SyntheticScenarioGenerator:
         """
         Iterative Proportional Fitting — enforces both row and column
         conservation so the modified OD has the same marginals as baseline.
+        Falls back to _enforce_conservation if no baseline is available.
         """
-        if baseline is None:
+        bl = baseline if baseline is not None else self.baseline
+        if bl is None:
             return self._enforce_conservation(delta)
 
-        modified = np.maximum(baseline + delta, 0.0)
+        modified = np.maximum(bl + delta, 0.0)
         np.fill_diagonal(modified, 0.0)
-        O = baseline.sum(axis=1)
-        D = baseline.sum(axis=0)
+        O = bl.sum(axis=1)
+        D = bl.sum(axis=0)
 
         for _ in range(max_iter):
             rs = modified.sum(axis=1)
             with np.errstate(invalid='ignore', divide='ignore'):
                 modified *= np.where(rs > 1e-9, O / rs, 1.0)[:, None]
             np.fill_diagonal(modified, 0.0)
-
             cs = modified.sum(axis=0)
             with np.errstate(invalid='ignore', divide='ignore'):
                 modified *= np.where(cs > 1e-9, D / cs, 1.0)[None, :]
             np.fill_diagonal(modified, 0.0)
-
             if (np.abs(modified.sum(axis=1) - O).max() < tol and
                     np.abs(modified.sum(axis=0) - D).max() < tol):
                 break
 
-        return modified - baseline
+        return modified - bl
 
-    #      v1 scenario types               
+    def _finalize(self, delta: np.ndarray) -> np.ndarray:
+        """
+        Apply IPF balancing with the stored baseline OD matrix.
+        If no baseline was provided at init, falls back to simple conservation.
+        Called at the end of every scenario generator.
+        """
+        return self._ipf_balance(delta)
 
     def generate_bus_new(self, scenario_id: int,
                           size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """New bus route — increases flow between affected zones."""
         p          = self.SIZE_PARAMS['bus_new'][size]
         center_idx = self.rng.integers(0, self.n)
         affected   = self._nearby(center_idx, p['radius'], p['n_zones'])
@@ -184,7 +174,7 @@ class SyntheticScenarioGenerator:
                     strength = np.exp(-dist * 10) * scale
                     delta[i, j] += self.rng.normal(strength, max(strength * 0.3, 1e-6))
 
-        delta = self._enforce_conservation(delta)
+        delta = self._finalize(delta)
         meta  = {
             'scenario_id':    f'syn_bus_new_{size}_{scenario_id:02d}',
             'type':           'bus_new',
@@ -197,7 +187,6 @@ class SyntheticScenarioGenerator:
 
     def generate_tram_extension(self, scenario_id: int,
                                  size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """Tram line extension along a directed corridor."""
         p         = self.SIZE_PARAMS['tram_extension'][size]
         start_idx = self.rng.integers(0, self.n)
         angle     = self.rng.uniform(0, 2 * np.pi)
@@ -225,7 +214,7 @@ class SyntheticScenarioGenerator:
                     strength = scale * np.exp(-end_dist * 5)
                     delta[i, j] += self.rng.normal(strength, max(strength * 0.25, 1e-6))
 
-        delta = self._enforce_conservation(delta)
+        delta = self._finalize(delta)
         meta  = {
             'scenario_id':    f'syn_tram_ext_{size}_{scenario_id:02d}',
             'type':           'tram_extension',
@@ -238,7 +227,6 @@ class SyntheticScenarioGenerator:
 
     def generate_stop_closure(self, scenario_id: int,
                                size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """Stop closure — negative local impact, partial transfer to border zones."""
         p          = self.SIZE_PARAMS['stop_closure'][size]
         center_idx = self.rng.integers(0, self.n)
         affected   = self._nearby(center_idx, p['radius'], p['n_zones'])
@@ -259,7 +247,7 @@ class SyntheticScenarioGenerator:
             for i in border:
                 delta[i, :] += gain
 
-        delta = self._enforce_conservation(delta)
+        delta = self._finalize(delta)
         meta  = {
             'scenario_id':    f'syn_stop_closure_{size}_{scenario_id:02d}',
             'type':           'stop_closure',
@@ -270,27 +258,19 @@ class SyntheticScenarioGenerator:
         }
         return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
 
-    #      v2 scenario types               
-
     def generate_metro_extension(self, scenario_id: int,
                                   size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Extend an existing metro corridor by 1-3 new terminal zones.
-        New zones gain inflow from the corridor; bus alternatives lose flow.
-        Uses IPF double-balancing for conservation.
-        """
         p = self.SIZE_PARAMS['metro_extension'][size]
 
-        # Select a long corridor (metro proxy: top-quartile by zone spread)
-        all_zones = list(range(self.n))
+        all_zones    = list(range(self.n))
         corridor_size = self.rng.integers(8, max(9, self.n // 5))
-        start = self.rng.integers(0, self.n)
-        corridor = self._nearby(start, 8.0, int(corridor_size)).tolist()
+        start        = self.rng.integers(0, self.n)
+        corridor     = self._nearby(start, 8.0, int(corridor_size)).tolist()
         if len(corridor) < 3:
             corridor = list(range(min(10, self.n)))
 
         non_corridor = [z for z in all_zones if z not in set(corridor)]
-        n_new = min(p['n_new'], len(non_corridor))
+        n_new        = min(p['n_new'], len(non_corridor))
         if n_new == 0:
             return self._empty(f'syn_metro_ext_{size}_{scenario_id:02d}',
                                'metro_extension', size)
@@ -302,11 +282,10 @@ class SyntheticScenarioGenerator:
         new_zones = self.rng.choice(non_corridor, size=n_new, replace=False, p=probs)
 
         magnitude = self.profile['val_std'] * p['magnitude']
-        delta = np.zeros((self.n, self.n))
+        delta     = np.zeros((self.n, self.n))
 
         for new_z in new_zones:
-            # Inflow increase to new zone from corridor
-            attr = np.abs(np.arange(len(corridor)) - len(corridor)) + 1.0
+            attr    = np.abs(np.arange(len(corridor)) - len(corridor)) + 1.0
             weights = attr / attr.sum()
             for src_z, w in zip(corridor, weights):
                 gain = magnitude * w + self.rng.exponential(0.5)
@@ -315,17 +294,16 @@ class SyntheticScenarioGenerator:
                 if alts:
                     delta[src_z, self.rng.choice(alts)] -= gain
 
-            # Modal shift away from bus alternatives
             bus_alts = [z for z in non_corridor if z != new_z]
             if bus_alts:
-                n_bus = min(3, len(bus_alts))
+                n_bus  = min(3, len(bus_alts))
                 chosen = self.rng.choice(bus_alts, size=n_bus, replace=False)
                 loss_each = magnitude * 0.4 / n_bus
                 for bz in chosen:
-                    delta[new_z, bz] -= loss_each
+                    delta[new_z, bz]               -= loss_each
                     delta[new_z, self.rng.choice(corridor)] += loss_each
 
-        delta = self._enforce_conservation(delta)
+        delta = self._finalize(delta)
         meta  = {
             'scenario_id':    f'syn_metro_ext_{size}_{scenario_id:02d}',
             'type':           'metro_extension',
@@ -339,18 +317,13 @@ class SyntheticScenarioGenerator:
     def generate_bus_frequency_increase(
             self, scenario_id: int,
             size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Increase trip frequency on a bus corridor — no topology change.
-        Induced demand scales with frequency elasticity (Balcombe et al., 2004).
-        """
-        p = self.SIZE_PARAMS['bus_frequency_increase'][size]
+        p               = self.SIZE_PARAMS['bus_frequency_increase'][size]
         demand_increase = p['elasticity'] * (p['freq_mult'] - 1.0)
 
-        # Select a short corridor (bus proxy)
-        center_idx  = self.rng.integers(0, self.n)
-        corridor    = self._nearby(center_idx, 4.0, 20).tolist()
-        corr_set    = set(corridor)
-        non_corr    = [z for z in range(self.n) if z not in corr_set]
+        center_idx = self.rng.integers(0, self.n)
+        corridor   = self._nearby(center_idx, 4.0, 20).tolist()
+        corr_set   = set(corridor)
+        non_corr   = [z for z in range(self.n) if z not in corr_set]
 
         delta = np.zeros((self.n, self.n))
         for i, z_o in enumerate(corridor):
@@ -363,7 +336,7 @@ class SyntheticScenarioGenerator:
                         bleed = self.rng.choice(non_corr)
                         delta[zo, bleed] -= gain * 0.25
 
-        delta = self._enforce_conservation(delta)
+        delta = self._finalize(delta)
         meta  = {
             'scenario_id':    f'syn_bus_freq_{size}_{scenario_id:02d}',
             'type':           'bus_frequency_increase',
@@ -377,15 +350,10 @@ class SyntheticScenarioGenerator:
     def generate_parallel_route_addition(
             self, scenario_id: int,
             size: str = 'medium') -> Tuple[pd.DataFrame, Dict]:
-        """
-        Add a surface route parallel to a metro segment.
-        Models modal competition: metro loses demand, exclusive zones gain.
-        """
         p = self.SIZE_PARAMS['parallel_route_addition'][size]
 
-        # Metro-like corridor
-        start = self.rng.integers(0, self.n)
-        metro = self._nearby(start, 8.0, self.rng.integers(8, 16)).tolist()
+        start   = self.rng.integers(0, self.n)
+        metro   = self._nearby(start, 8.0, self.rng.integers(8, 16)).tolist()
         if len(metro) < 4:
             metro = list(range(min(12, self.n)))
 
@@ -393,17 +361,17 @@ class SyntheticScenarioGenerator:
         seg_start  = self.rng.integers(0, len(metro) - n_parallel)
         parallel   = metro[seg_start: seg_start + n_parallel]
 
-        non_metro  = [z for z in range(self.n) if z not in set(metro)]
-        n_excl     = self.rng.integers(2, 6)
-        exclusive  = (self.rng.choice(non_metro, size=min(n_excl, len(non_metro)),
-                                      replace=False).tolist()
-                      if non_metro else [])
+        non_metro = [z for z in range(self.n) if z not in set(metro)]
+        n_excl    = self.rng.integers(2, 6)
+        exclusive = (self.rng.choice(non_metro,
+                                     size=min(n_excl, len(non_metro)),
+                                     replace=False).tolist()
+                     if non_metro else [])
 
-        magnitude    = self.profile['val_std'] * p['magnitude']
-        suppression  = p['abstraction'] * 0.25
-        delta = np.zeros((self.n, self.n))
+        magnitude   = self.profile['val_std'] * p['magnitude']
+        suppression = p['abstraction'] * 0.25
+        delta       = np.zeros((self.n, self.n))
 
-        # Modal abstraction on metro-served pairs
         for i, z_o in enumerate(parallel):
             for z_d in parallel[i + 1:]:
                 for zo, zd in [(z_o, z_d), (z_d, z_o)]:
@@ -412,7 +380,6 @@ class SyntheticScenarioGenerator:
                     if exclusive:
                         delta[zo, self.rng.choice(exclusive)] += suppress * 0.6
 
-        # New demand from exclusive zones
         for excl_z in exclusive:
             for seg_z in parallel:
                 for zo, zd in [(seg_z, excl_z), (excl_z, seg_z)]:
@@ -423,9 +390,9 @@ class SyntheticScenarioGenerator:
                     if non_par:
                         delta[zo, self.rng.choice(non_par)] -= gain * 0.7
 
-        delta = self._enforce_conservation(delta)
+        delta        = self._finalize(delta)
         all_affected = parallel + exclusive
-        meta  = {
+        meta         = {
             'scenario_id':    f'syn_parallel_{size}_{scenario_id:02d}',
             'type':           'parallel_route_addition',
             'size':           size,
@@ -436,20 +403,13 @@ class SyntheticScenarioGenerator:
         return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
 
     def _empty(self, scenario_id, stype, size) -> Tuple[pd.DataFrame, Dict]:
-        """Return a zero delta for degenerate edge cases."""
         delta = np.zeros((self.n, self.n))
         meta  = {'scenario_id': scenario_id, 'type': stype, 'size': size,
                  'affected_zones': [], 'n_affected': 0}
         return pd.DataFrame(delta, index=self.zone_ids, columns=self.zone_ids), meta
 
-    #      Batch generation                 
-
     def generate_batch(self, n_per_type: int = 30) -> List[Tuple[pd.DataFrame, Dict]]:
-        """
-        Generate n_per_type scenarios for each of the 6 types.
-        Sizes cycle: small / medium / large.
-        """
-        sizes = ['small', 'medium', 'large']
+        sizes      = ['small', 'medium', 'large']
         generators = {
             'bus_new':                 self.generate_bus_new,
             'tram_extension':          self.generate_tram_extension,
@@ -471,11 +431,8 @@ class SyntheticScenarioGenerator:
         return results
 
 
-#      Validation                 
-
 def validate_synthetic(real_diff: pd.DataFrame,
                         synthetic_diffs: List[pd.DataFrame]) -> pd.DataFrame:
-    """Compare statistical properties of real vs synthetic ΔOD matrices."""
     def stats(df, name):
         v  = df.values.flatten()
         nz = v[np.abs(v) > 0.01]
@@ -495,11 +452,8 @@ def validate_synthetic(real_diff: pd.DataFrame,
     return pd.DataFrame(rows).set_index('scenario')
 
 
-#      Save / load                    
-
 def save_scenarios(scenarios: List[Tuple[pd.DataFrame, Dict]],
                    output_dir: str):
-    """Save ΔOD matrices as CSV files with a metadata.json index."""
     os.makedirs(output_dir, exist_ok=True)
     for diff, meta in scenarios:
         diff.to_csv(os.path.join(output_dir, f'{meta["scenario_id"]}_diff.csv'))
@@ -510,7 +464,6 @@ def save_scenarios(scenarios: List[Tuple[pd.DataFrame, Dict]],
 
 def load_scenarios(output_dir: str,
                    zone_ids: List[int]) -> List[Tuple[pd.DataFrame, Dict]]:
-    """Load scenarios saved by save_scenarios()."""
     with open(os.path.join(output_dir, 'metadata.json')) as f:
         metas = json.load(f)
     results = []
