@@ -112,10 +112,10 @@ class SyntheticScenarioGenerator:
         return self.rng.choice(within, size=min(n, len(within)), replace=False)
 
     def _enforce_conservation(self, delta: np.ndarray) -> np.ndarray:
-        """Fallback: distribute residual among non-zero cells."""
         total = delta.sum()
         mask  = np.abs(delta) > 1e-6
-        if abs(total) > 0.01 and mask.sum() > 0:
+        # Csak akkor javít, ha a totál nagyon nagy — kis eltérés megengedett
+        if abs(total) > delta.std() * self.n * 0.1 and mask.sum() > 0:
             delta[mask] -= total / mask.sum()
         return delta
 
