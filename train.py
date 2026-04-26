@@ -284,13 +284,19 @@ def run_training(args):
         print('Not enough scenarios to train.')
         sys.exit(1)
 
-    # Train / val split — Bus 35 is always held out
-    train_scenarios = [s for s in all_scenarios if s['name'] != '35 bus']
+    # Train / val split
+    # M1 extension is held out as validation set.
+    # Rationale: Bus 35 moves into training (all 3 real scenarios needed
+    # given the small real-data pool). M1 is chosen as val over M2 because
+    # its amplitude (mean|diff|~12) is closer to the training set average,
+    # making it a more representative generalisation test.
+    VAL_SCENARIO_NAME = 'M1 extension'
+    train_scenarios = [s for s in all_scenarios if s['name'] != VAL_SCENARIO_NAME]
     val_scenario    = next(
-        (s for s in all_scenarios if s['name'] == '35 bus'), None
+        (s for s in all_scenarios if s['name'] == VAL_SCENARIO_NAME), None
     )
     if val_scenario is None:
-        print('⚠️  Bus 35 validation scenario not found — using last scenario')
+        print(f'Warning: Val scenario "{VAL_SCENARIO_NAME}" not found - using last scenario')
         train_scenarios = all_scenarios[:-1]
         val_scenario    = all_scenarios[-1]
 
