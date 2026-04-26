@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 from config.paths import (
     BASE_DIR, ZONES_SHP, GTFS_ZIP, SYNTHETIC_DIR,
     M2_BASE_KK, M2_DEV_KK,
@@ -35,7 +36,8 @@ from utils.data import (
     NUM_FEATURES,
 )
 from utils.synthetic_scenarios import load_scenarios
-
+from utils.loss import combined_loss
+from utils.metrics import evaluate_all
 
 #      Scenario loading               
 
@@ -354,7 +356,6 @@ def run_training(args):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
     )
-    criterion = nn.MSELoss()
 
     best_val_loss    = float('inf')
     patience_counter = 0
@@ -370,7 +371,7 @@ def run_training(args):
             else:
                 pred = model(s['x_seq'], s['scenario_feat'])
 
-            loss = criterion(pred, s['target']) * s['weight']
+            loss = combined_loss(pred, s['target']) * s['weight']
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -388,8 +389,13 @@ def run_training(args):
             else:
                 val_pred = model(val_scenario['x_seq'],
                                  val_scenario['scenario_feat'])
-            val_loss = criterion(val_pred, val_scenario['target']).item()
+            val_loss = combined_loss(val_pred, val_scenario['target']).item()
             val_mae  = F.l1_loss(val_pred, val_scenario['target']).item()
+
+            # Extended metrics (numpy, detached)
+            _p = val_pred.cpu().numpy()
+            _t = val_scenario['target'].cpu().numpy()
+            val_metrics = evaluate_all(_p, _t, k=20)
 
         history['val_loss'].append(val_loss)
         history['val_mae'].append(val_mae)
@@ -405,6 +411,7 @@ def run_training(args):
                 'train_losses':     history['train_loss'],
                 'val_losses':       history['val_loss'],
                 'val_maes':         history['val_mae'],
+                'best_val_metrics': val_metrics,
                 # target_std values needed to denormalise predictions at inference
                 'target_stds': {
                     s['name']: s['target_std'].item() for s in all_scenarios
@@ -413,7 +420,9 @@ def run_training(args):
             print(f'  Epoch {epoch+1:3d} | '
                   f'Train: {train_loss:.4f} | '
                   f'Val: {val_loss:.4f} | '
-                  f'MAE: {val_mae:.4f} ✅')
+                  f'MAE: {val_mae:.4f} | '
+                  f'Spearman: {val_metrics["spearman"]:.3f} | '
+                  f'Top20: {val_metrics["top_k_acc"]:.2f} ✅')
         else:
             patience_counter += 1
             if epoch % 10 == 0:
