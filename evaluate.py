@@ -210,10 +210,10 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
     val_std = target_stds.get(VAL_SCENARIO_NAME, None)
 
     if val_std is not None:
-        pred_np   = pred_np   * val_std
-        target_np = target_np * val_std   # re-scale ground truth too (was stored normalised)
-        print(f'  Denormalised with target_std={val_std:.4f} '
-              f'(scale: utas/zóna ΔOD)')
+        pred_np = pred_np * val_std
+        # target_np comes from diff_to_target() — raw unscaled values (utas/zóna).
+        # Only pred needs denormalising; target is already on the correct scale.
+        print(f'  Denormalised pred with target_std={val_std:.4f} (scale: utas/zóna ΔOD)')
     else:
         print('  ⚠️  target_std not found in checkpoint — metrics in normalised space')
         print('       Re-train with current train.py to save target_stds.')
