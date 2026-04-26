@@ -23,22 +23,13 @@ def top_k_zone_accuracy(
     target: np.ndarray,
     k: int = 20,
 ) -> float:
-    """
-    What fraction of the top-k most affected zones (by |ΔOD|) 
-    did the model correctly identify?
-    
-    This is the key metric for the thesis: even if magnitudes are off,
-    can the model find the right zones?
-    """
-    # aggregate per origin zone: sum of absolute OD changes
-    target_zone_impact = np.abs(target).sum(axis=1)
-    pred_zone_impact   = np.abs(pred).sum(axis=1)
+    # Handle both 1D (zone-level) and 2D (OD matrix) inputs
+    target_zone_impact = np.abs(target).sum(axis=1) if target.ndim == 2 else np.abs(target)
+    pred_zone_impact   = np.abs(pred).sum(axis=1)   if pred.ndim == 2   else np.abs(pred)
 
     true_top_k = set(np.argsort(target_zone_impact)[-k:])
     pred_top_k = set(np.argsort(pred_zone_impact)[-k:])
-
-    hits = len(true_top_k & pred_top_k)
-    return hits / k
+    return len(true_top_k & pred_top_k) / k
 
 
 def nonzero_rmse(pred: np.ndarray, target: np.ndarray, threshold: float = 0.01) -> float:

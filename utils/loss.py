@@ -26,16 +26,6 @@ def sign_auxiliary_loss(pred: torch.Tensor, target: torch.Tensor, weight: float 
     return weight * sign_loss
 
 
-def combined_loss(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    alpha: float = 5.0,
-    sign_weight: float = 0.3,
-) -> torch.Tensor:
-    """
-    Main training loss:
-        L = weighted_MSE + sign_weight * sign_BCE
-    """
-    mse = weighted_mse_loss(pred, target, alpha=alpha)
-    sign = sign_auxiliary_loss(pred, target, weight=sign_weight)
-    return mse + sign
+def combined_loss(pred: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
+    """MSE loss over normalised per-zone ΔOD predictions."""
+    return ((pred - target) ** 2).mean()

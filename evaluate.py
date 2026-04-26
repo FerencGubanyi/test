@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from utils.metrics import evaluate_all
 
 from config.paths import (
     BASE_DIR, ZONES_SHP, GTFS_ZIP,
@@ -139,22 +140,14 @@ def load_model(model_type: str, zone_ids, device, gtfs_features=None):
 # ─── Metrics ─────────────────────────────────────────────────────────────────
 
 def compute_metrics(pred_np: np.ndarray, target_np: np.ndarray) -> dict:
-    from utils.metrics import evaluate_all
-    base = evaluate_all(pred_np.reshape(-1, int(len(pred_np)**0.5))
-                        if pred_np.ndim == 1 else pred_np,
-                        target_np.reshape(-1, int(len(target_np)**0.5))
-                        if target_np.ndim == 1 else target_np,
-                        k=20)
+    mae  = float(np.mean(np.abs(pred_np - target_np)))
+    rmse = float(np.sqrt(np.mean((pred_np - target_np) ** 2)))
+    ss_res = np.sum((target_np - pred_np) ** 2)
+    ss_tot = np.sum((target_np - target_np.mean()) ** 2)
+    r2   = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
     morans_i = _morans_i(pred_np - target_np)
-    return {
-        'MAE':      float(np.mean(np.abs(pred_np - target_np))),
-        'RMSE':     base['rmse'],
-        'R2':       base['r2'],
-        'Spearman': base['spearman'],
-        'TopKAcc':  base['top_k_acc'],
-        'NonzeroRMSE': base['nonzero_rmse'],
-        'MoransI':  morans_i,
-    }
+    return {'MAE': mae, 'RMSE': rmse, 'R2': r2, 'MoransI': morans_i}
+
 
 def _morans_i(residuals: np.ndarray, n_neighbors: int = 5) -> float:
     n = len(residuals)
@@ -262,20 +255,21 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
         print('  ⚠️  target_std not found in checkpoint — metrics in normalised space')
         print('       Re-train with current train.py to save target_stds.')
 
-    n = len(zone_ids)
-    metrics = compute_metrics(
-        pred_np.reshape(n, n) if pred_np.ndim == 1 else pred_np,
-        target_np.reshape(n, n) if target_np.ndim == 1 else target_np,
-    )
+    # Primary metrics (denormalised scale)
+    base_metrics = compute_metrics(pred_np, target_np)
+
+    # Extended metrics — computed on normalised scale for rank/direction quality
+    # (Spearman and Top-K are scale-invariant so normalisation does not matter)
+    ext_metrics = evaluate_all(pred_np, target_np, k=20)
 
     print(f'\n{model_type.upper()} — {VAL_SCENARIO_NAME} (validation):')
-    print(f'  MAE:          {metrics["MAE"]:.4f}  utas/zóna')
-    print(f'  RMSE:         {metrics["RMSE"]:.4f}  utas/zóna')
-    print(f'  Nonzero RMSE: {metrics["NonzeroRMSE"]:.4f}  utas/zóna')
-    print(f'  R²:           {metrics["R2"]:.4f}')
-    print(f'  Spearman ρ:   {metrics["Spearman"]:.4f}')
-    print(f'  Top-20 acc:   {metrics["TopKAcc"]:.2f}')
-    print(f'  Moran\'s I:    {metrics["MoransI"]:.4f}')
+    print(f'  MAE:            {base_metrics["MAE"]:.4f}  utas/zóna')
+    print(f'  RMSE:           {base_metrics["RMSE"]:.4f}  utas/zóna')
+    print(f'  R²:             {base_metrics["R2"]:.4f}')
+    print(f'  Moran\'s I:     {base_metrics["MoransI"]:.4f}')
+    print(f'  Spearman ρ:     {ext_metrics["spearman"]:.4f}')
+    print(f'  Top-20 acc:     {ext_metrics["top_k_acc"]:.4f}  '
+          f'({int(ext_metrics["top_k_acc"]*20)}/20 correct zones)')
 
     return {
         'model':        model_type,
@@ -285,7 +279,9 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
         'param_count':  param_count,
         'inference_ms': inference_ms,
         'ckpt':         ckpt_data,
-        **metrics,
+        **base_metrics,
+        'Spearman':     ext_metrics['spearman'],
+        'Top20Acc':     ext_metrics['top_k_acc'],
     }
 
 
@@ -299,12 +295,14 @@ def plot_results(results: list, save_dir: str):
     colors = ['steelblue', 'coral']
 
     # 1. Metric bar chart
-    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
+    metrics_to_plot = ['MAE', 'RMSE', 'R2', 'Spearman', 'TopKAcc', 'MoransI']
+    fig, axes = plt.subplots(1, len(metrics_to_plot),
+                              figsize=(4 * len(metrics_to_plot), 5))
     fig.suptitle(
         f'GAT+LSTM vs Hypergraph+LSTM — {VAL_SCENARIO_NAME} validation',
         fontsize=12, fontweight='bold'
     )
-    for i, metric in enumerate(['MAE', 'RMSE', 'R2', 'Spearman', 'TopKAcc', 'MoransI']):
+    for i, metric in enumerate(metrics_to_plot):
         labels = [r['model'] for r in results]
         vals   = [r[metric] for r in results]
         axes[i].bar(labels, vals, color=colors[:len(labels)], edgecolor='white')
@@ -319,7 +317,7 @@ def plot_results(results: list, save_dir: str):
     print(f'Saved: {path}')
 
     # 2. Scatter plots
-    fig, axes = plt.subplots(1, 6, figsize=(22, 5))
+    fig, axes = plt.subplots(1, len(results), figsize=(7 * len(results), 6))
     if len(results) == 1:
         axes = [axes]
     for ax, r in zip(axes, results):
@@ -367,8 +365,8 @@ def plot_results(results: list, save_dir: str):
         for r in results
     ])
     # Reorder columns for readability in the thesis results table
-    col_order = ['model', 'MAE', 'RMSE', 'NonzeroRMSE', 'R2',
-                 'Spearman', 'TopKAcc', 'MoransI',
+    col_order = ['model', 'MAE', 'RMSE', 'R2', 'MoransI',
+                 'Spearman', 'Top20Acc',
                  'param_count', 'inference_ms', 'val_std']
     df = df[[c for c in col_order if c in df.columns]]
     csv_path = os.path.join(save_dir, 'results.csv')
