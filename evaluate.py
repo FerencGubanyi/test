@@ -16,12 +16,12 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 from config.paths import (
-    BASE_DIR, BUS35_KK, BUS35_DIFF_KK, ZONES_SHP, GTFS_ZIP,
+    BASE_DIR, ZONES_SHP, GTFS_ZIP,
     M2_BASE_KK, M2_DEV_KK,
+    M1_KK, M1_DIFF_KK,
     GAT_CHECKPOINT, HG_CHECKPOINT,
 )
 from utils.data import (
@@ -31,12 +31,17 @@ from utils.data import (
     NUM_FEATURES,
 )
 
+# ─── Validation scenario ────────────────────────────────────────────────────
+# M1 extension is the held-out validation scenario (matches train.py split).
+# The model was never trained on this scenario, so evaluation here is a fair
+# out-of-sample test. Bus 35 is now part of the training set.
+VAL_SCENARIO_NAME = 'M1 extension'
+VAL_SCENARIO_TYPE = 'metro_extension'   # used for scenario_feat encoding
 
-#      Model loading                
+
+# ─── Model loading ───────────────────────────────────────────────────────────
 
 def load_model(model_type: str, zone_ids, device, gtfs_features=None):
-    """Load a trained model checkpoint and rebuild its graph/hypergraph."""
-
     in_ch = NUM_FEATURES if gtfs_features else 16
 
     if model_type == 'gat':
@@ -48,8 +53,12 @@ def load_model(model_type: str, zone_ids, device, gtfs_features=None):
 
         try:
             import geopandas as gpd
-            gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
+            gdf = gpd.read_file(ZONES_SHP)
             gdf['NO'] = gdf['NO'].astype(int)
+            gdf_proj  = gdf.to_crs(epsg=23700)
+            centroids = gdf_proj.geometry.centroid.to_crs(epsg=4326)
+            gdf['lon'] = centroids.x
+            gdf['lat'] = centroids.y
         except Exception:
             gdf = None
 
@@ -73,10 +82,12 @@ def load_model(model_type: str, zone_ids, device, gtfs_features=None):
         if os.path.exists(GTFS_ZIP):
             try:
                 import geopandas as gpd
-                gdf = gpd.read_file(ZONES_SHP).to_crs(epsg=4326)
-                gdf['NO']  = gdf['NO'].astype(int)
-                gdf['lon'] = gdf.geometry.centroid.x
-                gdf['lat'] = gdf.geometry.centroid.y
+                gdf = gpd.read_file(ZONES_SHP)
+                gdf['NO'] = gdf['NO'].astype(int)
+                gdf_proj  = gdf.to_crs(epsg=23700)
+                centroids = gdf_proj.geometry.centroid.to_crs(epsg=4326)
+                gdf['lon'] = centroids.x
+                gdf['lat'] = centroids.y
 
                 with zipfile.ZipFile(GTFS_ZIP) as z:
                     stops      = pd.read_csv(z.open('stops.txt'))
@@ -112,25 +123,22 @@ def load_model(model_type: str, zone_ids, device, gtfs_features=None):
         print(f'  Run: python train.py --model {model_type}')
         return None, None, None
 
-    # Load — supports both old (state_dict only) and new (dict) format
     ckpt = torch.load(checkpoint, map_location=device)
     if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
         model.load_state_dict(ckpt['model_state_dict'])
-        print(f'  Best epoch: {ckpt.get("best_epoch", "?")} | '
-              f'Best val loss: {ckpt.get("best_val_loss", 0):.4f}')
+        print(f'  Best epoch     : {ckpt.get("best_epoch", "?")}')
+        print(f'  Best val loss  : {ckpt.get("best_val_loss", 0):.4f} (normalised MSE)')
     else:
-        model.load_state_dict(ckpt)   # backward compat
+        model.load_state_dict(ckpt)
 
     model.eval()
     print(f'Loaded {model_type}: {checkpoint}')
     return model, extra, ckpt if isinstance(ckpt, dict) else {}
 
 
-#      Metrics                  
+# ─── Metrics ─────────────────────────────────────────────────────────────────
 
-def compute_metrics(pred_np: np.ndarray,
-                    target_np: np.ndarray) -> dict:
-    """Compute MAE, RMSE, R², and Moran's I on residuals."""
+def compute_metrics(pred_np: np.ndarray, target_np: np.ndarray) -> dict:
     mae  = float(np.mean(np.abs(pred_np - target_np)))
     rmse = float(np.sqrt(np.mean((pred_np - target_np) ** 2)))
     ss_res = np.sum((target_np - pred_np) ** 2)
@@ -141,35 +149,26 @@ def compute_metrics(pred_np: np.ndarray,
 
 
 def _morans_i(residuals: np.ndarray, n_neighbors: int = 5) -> float:
-    """
-    Compute Moran's I spatial autocorrelation on per-zone residuals.
-    Uses a simple k-NN weight matrix based on zone index proximity
-    (proxy for spatial adjacency when coordinates are unavailable).
-    """
     n = len(residuals)
     if n < 4:
         return 0.0
-
-    # Build binary k-NN weight matrix
     W = np.zeros((n, n))
     for i in range(n):
-        dists   = np.abs(np.arange(n) - i)
-        dists[i] = n   # exclude self
+        dists    = np.abs(np.arange(n) - i)
+        dists[i] = n
         neighbors = np.argsort(dists)[:n_neighbors]
         W[i, neighbors] = 1.0
-
-    W /= W.sum(axis=1, keepdims=True) + 1e-9  # row-normalise
-
+    W /= W.sum(axis=1, keepdims=True) + 1e-9
     z   = residuals - residuals.mean()
     num = float(n * z @ W @ z)
     den = float(W.sum() * (z ** 2).sum() + 1e-9)
     return num / den
 
 
-#      Evaluation                 
+# ─── Evaluation ──────────────────────────────────────────────────────────────
 
 def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
-    """Run inference on the Bus 35 validation scenario and compute metrics."""
+    """Run inference on the M1 extension validation scenario."""
     model, extra, ckpt_data = load_model(
         model_type, zone_ids, device, gtfs_features
     )
@@ -178,20 +177,21 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
 
     in_ch = NUM_FEATURES if gtfs_features else 16
 
+    # Load M1 validation scenario data
     m2_base  = load_od_matrix_with_header(M2_BASE_KK)
-    bus_kk   = load_od_matrix_with_header(BUS35_KK).reindex(
+    m1_kk    = load_od_matrix_with_header(M1_KK).reindex(
         index=zone_ids, columns=zone_ids).fillna(0)
-    bus_diff = load_od_matrix_with_header(BUS35_DIFF_KK).reindex(
+    m1_diff  = load_od_matrix_with_header(M1_DIFF_KK).reindex(
         index=zone_ids, columns=zone_ids).fillna(0)
 
     x_seq = [
         od_matrix_to_zone_features(m2_base, in_ch, gtfs_features).to(device),
-        od_matrix_to_zone_features(bus_kk,  in_ch, gtfs_features).to(device),
+        od_matrix_to_zone_features(m1_kk,   in_ch, gtfs_features).to(device),
     ]
     scenario_feat = build_scenario_features(
-        'bus_new', get_affected_zones(bus_diff, zone_ids)
+        VAL_SCENARIO_TYPE, get_affected_zones(m1_diff, zone_ids)
     ).to(device)
-    target = diff_to_target(bus_diff, zone_ids, device)
+    target = diff_to_target(m1_diff, zone_ids, device)
 
     with torch.no_grad():
         if model_type == 'gat':
@@ -201,37 +201,56 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
 
     pred_np   = pred.cpu().numpy().flatten()
     target_np = target.cpu().numpy().flatten()
-    metrics   = compute_metrics(pred_np, target_np)
 
-    print(f'\n{model_type.upper()} — Bus 35 validation:')
-    print(f'  MAE:      {metrics["MAE"]:.4f}')
-    print(f'  RMSE:     {metrics["RMSE"]:.4f}')
-    print(f'  R²:       {metrics["R2"]:.4f}')
-    print(f'  Moran\'s I:{metrics["MoransI"]:.4f}')
+    # ── Denormalise ──────────────────────────────────────────────────────────
+    # The model was trained on normalised targets (target / target_std).
+    # We recover the original passenger-count scale using the stored target_std
+    # for the M1 validation scenario from the checkpoint.
+    target_stds = ckpt_data.get('target_stds', {})
+    val_std = target_stds.get(VAL_SCENARIO_NAME, None)
+
+    if val_std is not None:
+        pred_np   = pred_np   * val_std
+        target_np = target_np * val_std   # re-scale ground truth too (was stored normalised)
+        print(f'  Denormalised with target_std={val_std:.4f} '
+              f'(scale: utas/zóna ΔOD)')
+    else:
+        print('  ⚠️  target_std not found in checkpoint — metrics in normalised space')
+        print('       Re-train with current train.py to save target_stds.')
+
+    metrics = compute_metrics(pred_np, target_np)
+
+    print(f'\n{model_type.upper()} — {VAL_SCENARIO_NAME} (validation):')
+    print(f'  MAE:       {metrics["MAE"]:.4f}  utas/zóna')
+    print(f'  RMSE:      {metrics["RMSE"]:.4f}  utas/zóna')
+    print(f'  R²:        {metrics["R2"]:.4f}')
+    print(f'  Moran\'s I: {metrics["MoransI"]:.4f}')
 
     return {
         'model':    model_type,
         'pred':     pred_np,
         'target':   target_np,
+        'val_std':  val_std,
         'ckpt':     ckpt_data,
         **metrics,
     }
 
 
-#      Plots                      
+# ─── Plots ───────────────────────────────────────────────────────────────────
 
 def plot_results(results: list, save_dir: str):
-    """Generate and save all evaluation figures."""
     os.makedirs(save_dir, exist_ok=True)
     fig_dir = os.path.join(save_dir, 'figures')
     os.makedirs(fig_dir, exist_ok=True)
 
-    # 1. Metric bar chart
-    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
-    fig.suptitle('GAT+LSTM vs Hypergraph+LSTM — Bus 35 validation',
-                 fontsize=12, fontweight='bold')
     colors = ['steelblue', 'coral']
 
+    # 1. Metric bar chart
+    fig, axes = plt.subplots(1, 4, figsize=(16, 5))
+    fig.suptitle(
+        f'GAT+LSTM vs Hypergraph+LSTM — {VAL_SCENARIO_NAME} validation',
+        fontsize=12, fontweight='bold'
+    )
     for i, metric in enumerate(['MAE', 'RMSE', 'R2', 'MoransI']):
         labels = [r['model'] for r in results]
         vals   = [r[metric] for r in results]
@@ -240,7 +259,6 @@ def plot_results(results: list, save_dir: str):
         axes[i].grid(alpha=0.3, axis='y')
         for j, v in enumerate(vals):
             axes[i].text(j, v, f'{v:.4f}', ha='center', va='bottom', fontsize=9)
-
     plt.tight_layout()
     path = os.path.join(fig_dir, 'model_comparison.png')
     plt.savefig(path, dpi=150, bbox_inches='tight')
@@ -248,30 +266,25 @@ def plot_results(results: list, save_dir: str):
     print(f'Saved: {path}')
 
     # 2. Scatter plots
-    fig, axes = plt.subplots(1, len(results),
-                              figsize=(7 * len(results), 6))
+    fig, axes = plt.subplots(1, len(results), figsize=(7 * len(results), 6))
     if len(results) == 1:
         axes = [axes]
-
     for ax, r in zip(axes, results):
         ax.scatter(r['target'], r['pred'], alpha=0.25, s=6, color='steelblue')
         lim = max(np.abs(r['target']).max(), np.abs(r['pred']).max())
         ax.plot([-lim, lim], [-lim, lim], 'r--', lw=1)
         ax.set_title(f'{r["model"].upper()} (R²={r["R2"]:.3f})')
-        ax.set_xlabel('Ground truth ΔOD')
-        ax.set_ylabel('Predicted ΔOD')
+        ax.set_xlabel('Ground truth ΔOD (utas/zóna)')
+        ax.set_ylabel('Predicted ΔOD (utas/zóna)')
         ax.grid(alpha=0.3)
-
     plt.tight_layout()
     path = os.path.join(fig_dir, 'scatter_plots.png')
     plt.savefig(path, dpi=150, bbox_inches='tight')
     plt.show()
     print(f'Saved: {path}')
 
-    # 3. Loss curves (from checkpoint history)
-    has_history = any(
-        r['ckpt'].get('train_losses') for r in results
-    )
+    # 3. Loss curves
+    has_history = any(r['ckpt'].get('train_losses') for r in results)
     if has_history:
         fig, ax = plt.subplots(figsize=(10, 5))
         for r, color in zip(results, colors):
@@ -285,8 +298,8 @@ def plot_results(results: list, save_dir: str):
                         color=color, linestyle='--',
                         label=f'{r["model"]} val')
         ax.set_xlabel('Epoch')
-        ax.set_ylabel('MSE Loss')
-        ax.set_title('Training and validation loss')
+        ax.set_ylabel('Normalised MSE Loss')
+        ax.set_title('Training and validation loss curves')
         ax.legend()
         ax.grid(alpha=0.3)
         plt.tight_layout()
@@ -297,8 +310,7 @@ def plot_results(results: list, save_dir: str):
 
     # 4. Results CSV
     df = pd.DataFrame([
-        {k: v for k, v in r.items()
-         if k not in ['pred', 'target', 'ckpt']}
+        {k: v for k, v in r.items() if k not in ['pred', 'target', 'ckpt']}
         for r in results
     ])
     csv_path = os.path.join(save_dir, 'results.csv')
@@ -307,14 +319,13 @@ def plot_results(results: list, save_dir: str):
     print(df.to_string(index=False))
 
 
-#      Entry point                    
+# ─── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='all',
                         choices=['gat', 'hypergraph', 'all'])
-    parser.add_argument('--no_gtfs', action='store_true',
-                        help='Skip GTFS features (use 16-dim)')
+    parser.add_argument('--no_gtfs', action='store_true')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -324,7 +335,6 @@ if __name__ == '__main__':
     zone_ids = m2_base.index.tolist()
     print(f'Zones: {len(zone_ids)}')
 
-    # Build GTFS features once
     gtfs_features = None
     if not args.no_gtfs and os.path.exists(GTFS_ZIP):
         try:
