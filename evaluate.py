@@ -193,6 +193,11 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
     ).to(device)
     target = diff_to_target(m1_diff, zone_ids, device)
 
+    # ── Parameter count ─────────────────────────────────────────────────────
+    param_count = sum(p.numel() for p in model.parameters())
+    print(f'  Parameter count: {param_count:,}')
+
+    # ── GPU inference ────────────────────────────────────────────────────────
     with torch.no_grad():
         if model_type == 'gat':
             pred = model(x_seq, extra['edge_index'], scenario_feat)
@@ -201,6 +206,31 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
 
     pred_np   = pred.cpu().numpy().flatten()
     target_np = target.cpu().numpy().flatten()
+
+    # ── CPU inference time ───────────────────────────────────────────────────
+    # Measure on CPU — relevant for the Streamlit inference app.
+    # 10-run average after 1 warmup pass to avoid cold-start bias.
+    import time
+    model_cpu         = model.cpu()
+    x_seq_cpu         = [x.cpu() for x in x_seq]
+    scenario_feat_cpu = scenario_feat.cpu()
+
+    if model_type == 'gat':
+        edge_index_cpu = extra['edge_index'].cpu()
+        _call = lambda: model_cpu(x_seq_cpu, edge_index_cpu, scenario_feat_cpu)
+    else:
+        _call = lambda: model_cpu(x_seq_cpu, scenario_feat_cpu)
+
+    with torch.no_grad():
+        _call()  # warmup
+        N     = 10
+        start = time.perf_counter()
+        for _ in range(N):
+            _call()
+        inference_ms = (time.perf_counter() - start) / N * 1000
+
+    model.to(device)  # move back to GPU for consistency
+    print(f'  CPU inference time: {inference_ms:.1f} ms (avg over {N} runs)')
 
     # ── Denormalise ──────────────────────────────────────────────────────────
     # The model was trained on normalised targets (target / target_std).
@@ -227,11 +257,13 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
     print(f'  Moran\'s I: {metrics["MoransI"]:.4f}')
 
     return {
-        'model':    model_type,
-        'pred':     pred_np,
-        'target':   target_np,
-        'val_std':  val_std,
-        'ckpt':     ckpt_data,
+        'model':        model_type,
+        'pred':         pred_np,
+        'target':       target_np,
+        'val_std':      val_std,
+        'param_count':  param_count,
+        'inference_ms': inference_ms,
+        'ckpt':         ckpt_data,
         **metrics,
     }
 
@@ -313,6 +345,10 @@ def plot_results(results: list, save_dir: str):
         {k: v for k, v in r.items() if k not in ['pred', 'target', 'ckpt']}
         for r in results
     ])
+    # Reorder columns for readability in the thesis results table
+    col_order = ['model', 'MAE', 'RMSE', 'R2', 'MoransI',
+                 'param_count', 'inference_ms', 'val_std']
+    df = df[[c for c in col_order if c in df.columns]]
     csv_path = os.path.join(save_dir, 'results.csv')
     df.to_csv(csv_path, index=False)
     print(f'\nResults saved: {csv_path}')
