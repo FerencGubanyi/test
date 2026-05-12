@@ -201,7 +201,7 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
         bs,bm=od[bl]; as_,am=od[al]
         _,ba,aa=_align_matrices(bs,bm,as_,am)
         _,bf,af=_align_matrices(all_st,ba,all_st,aa)
-        d=af-bf; std=float(d.std())+1e-8
+        d=af-bf; std=float(d.sum(axis=1).std())+1e-8   # ← changed
         scenarios.append({"node_features":compute_bart_node_features(bf),"delta_od":d,
                            "delta_od_normalized":d/std,"std":std,"is_real":True,"label":name,"split":split})
         if verbose: print(f"  Real '{name}': MAE={np.abs(d).mean():.2f}, split={split}")
@@ -216,7 +216,7 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
         if verbose: print(f"  Generating {n_synthetic} synthetic scenarios...")
         ref=bl_mats[0]
         for i,d in enumerate(generate_bart_synthetic_scenarios(bl_mats,n_synthetic)):
-            std=float(d.std())+1e-8
+            std=float(d.sum(axis=1).std())+1e-8   # ← changed
             scenarios.append({"node_features":compute_bart_node_features(ref),"delta_od":d,
                                "delta_od_normalized":d/std,"std":std,"is_real":False,
                                "label":f"synthetic_bart_{i:03d}","split":"train"})

@@ -41,14 +41,15 @@ def scenario_to_inputs(graph_data, scenario, device):
     x             = torch.tensor(scenario["node_features"], dtype=torch.float, device=device)
     x_seq         = [x]
     edge_index    = graph_data["edge_index"].to(device)
-    # unsqueeze(0) → shape (1, 8) to match lstm_out shape (1, hidden)
     scenario_feat = torch.zeros(8, dtype=torch.float, device=device).unsqueeze(0)
 
     delta_od  = scenario["delta_od"]
     target_np = delta_od.sum(axis=1)
-    std       = float(delta_od.std()) + 1e-8
-    target    = torch.tensor(target_np / std, dtype=torch.float, device=device)
-
+    
+    # Normalise by row_sum std (not full matrix std) — keeps target ~O(1)
+    std = float(target_np.std()) + 1e-8
+    
+    target = torch.tensor(target_np / std, dtype=torch.float, device=device)
     return x_seq, edge_index, scenario_feat, target, std
 
 
