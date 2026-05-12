@@ -20,25 +20,6 @@ from models.gat_lstm import GATLSTMModel, Config as GATConfig
 from models.hypergraph_lstm import HypergraphLSTMModel, HypergraphConfig
 from utils.bart_data import load_bart_transfer_dataset
 
-
-# ---------------------------------------------------------------------------
-# Config subclasses for BART (51 stations, 16 input features)
-# ---------------------------------------------------------------------------
-
-class BARTGATConfig(GATConfig):
-    NUM_ZONES        = 51
-    GAT_IN_CHANNELS  = 16
-    OUTPUT_SIZE      = 51
-    DEVICE           = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-class BARTHGConfig(HypergraphConfig):
-    NUM_ZONES        = 51
-    HG_IN_CHANNELS   = 16
-    OUTPUT_SIZE      = 51
-    DEVICE           = "cuda" if torch.cuda.is_available() else "cpu"
-
-
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
@@ -175,7 +156,19 @@ def main():
     n_nodes         = graph_data["n_nodes"]
 
     print(f"Nodes: {n_nodes} | Train: {len(train_scenarios)} | Val: {len(val_scenarios)}")
+ # ── Build configs dynamically from n_nodes ────────────────────────────
+    class BARTGATConfig(GATConfig):
+        NUM_ZONES       = n_nodes
+        GAT_IN_CHANNELS = 16
+        OUTPUT_SIZE     = n_nodes
+        DEVICE          = str(device)
 
+    class BARTHGConfig(HypergraphConfig):
+        NUM_ZONES      = n_nodes
+        HG_IN_CHANNELS = 16
+        OUTPUT_SIZE    = n_nodes
+        DEVICE         = str(device)
+    # ─────────────────────────────────────────────────────────────────────
     H = None
     if args.model == "gat":
         model = GATLSTMModel(cfg=BARTGATConfig, scenario_feat_dim=8).to(device)
