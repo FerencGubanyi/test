@@ -200,8 +200,8 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
         scenarios.append({"node_features":compute_bart_node_features(bf),"delta_od":d,
                            "delta_od_normalized":d/std,"std":std,"is_real":True,"label":name,"split":split})
         if verbose: print(f"  Real '{name}': MAE={np.abs(d).mean():.2f}, split={split}")
-    _real("before_berryessa","after_berryessa","berryessa_extension_2020","val")
-    _real("before_antioch","after_antioch","antioch_extension_2023","train")
+    _real("before_berryessa","after_berryessa","berryessa_extension_2020","train")
+    _real("before_antioch","after_antioch","antioch_extension_2023","val")
     bl_mats=[]
     for lbl in ["baseline_2019_01","baseline_2019_06","baseline_2019_10","before_berryessa"]:
         if lbl in od:
