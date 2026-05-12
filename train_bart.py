@@ -107,7 +107,7 @@ def evaluate(model, model_type, val_scenarios, graph_data, device):
     model.eval()
     all_preds, all_targets = [], []
     for scenario in val_scenarios:
-        x_seq, edge_index, sf, _, std = scenario_to_inputs(
+        x_seq, edge_index, sf, target_norm, std = scenario_to_inputs(
             graph_data, scenario, device
         )
         if model_type == "gat":
@@ -115,8 +115,12 @@ def evaluate(model, model_type, val_scenarios, graph_data, device):
         else:
             pred = model(x_seq, sf)
 
-        all_preds.append(pred.squeeze().cpu().numpy() * std)
-        all_targets.append(scenario["delta_od"].sum(axis=1))
+        # Denormalise both pred and target the same way
+        pred_denorm   = pred.squeeze().cpu().numpy() * std
+        target_denorm = target_norm.cpu().numpy() * std   # ← use target_norm * std, not raw sum
+
+        all_preds.append(pred_denorm)
+        all_targets.append(target_denorm)
 
     return compute_metrics(
         np.concatenate(all_preds),
