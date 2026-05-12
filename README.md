@@ -18,7 +18,9 @@ test/
 │   └── hypergraph_lstm.py        # Hypergraph Neural Net + LSTM
 ├── utils/
 │   ├── data.py                   # OD matrix parsing, GTFS features
-│   └── synthetic_scenarios.py    # Synthetic scenario generator
+│   ├── loss.py                   # Combined MSE + Huber loss
+│   ├── metrics.py                # MAE, RMSE, R², Spearman, Top-K, Moran's I
+│   └── synthetic_scenarios.py    # Synthetic scenario generator (6 types, 180 scenarios)
 ├── db/
 │   ├── __init__.py
 │   └── init_db.py                # SQLite inference history layer
@@ -59,8 +61,10 @@ pip install -r requirements.txt
 ### Training
 
 ```bash
-python train.py --model gat --epochs 300 --lr 5e-4 --patience 30
-python train.py --model hypergraph --epochs 300 --lr 5e-4 --patience 30
+python train.py --model gat
+python train.py --model hypergraph
+# Defaults match thesis Table 3: --epochs 500 --patience 50 --real_weight 5.0
+# For a quick smoke test: --epochs 5 --patience 5
 ```
 
 ### Evaluation
@@ -105,8 +109,8 @@ pytest tests/test_models.py -v
 from google.colab import drive
 drive.mount('/content/drive')
 
-!python train.py --model gat --epochs 300 --patience 30
-!python train.py --model hypergraph --epochs 300 --patience 30
+!python train.py --model gat
+!python train.py --model hypergraph
 !python evaluate.py --model all
 ```
 
@@ -126,11 +130,12 @@ OD matrix Excel exports from BKK EFM VISUM.
 Expected format: zone IDs in row 0 starting at column 3, flow data from row 3.
 
 Real VISUM scenarios:
-- M1 metro extension
-- M2 metro extension
-- Bus 35 Pesterzsébet *(validation set)*
+- M2 metro extension *(training set)*
+- Bus 35 Pesterzsébet *(training set)*
+- M1 metro extension *(validation set — held out)*
 
-Synthetic scenarios (90 total): `bus_new`, `tram_extension`, `stop_closure`
+Synthetic scenarios (180 total, 30 per type): `bus_new`, `tram_extension`, `stop_closure`,
+`metro_extension`, `bus_freq`, `parallel` (see `utils/synthetic_scenarios.py`)
 
 ---
 
