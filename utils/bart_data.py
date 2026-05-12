@@ -26,22 +26,36 @@ def _is_valid_station(s):
     return (sl not in _NON_STATION_LABELS and 0 < len(s) <= 6
             and not s.startswith("#") and not (s.isdigit() and len(s) > 4))
 
-def _load_od_excel(path):
+def _load_od_excel(path: str) -> tuple:
     xl    = pd.ExcelFile(path)
-    sheet = next((s for s in ["Avg Weekday OD","Average Weekday","Avg Weekday"]
-                  if s in xl.sheet_names), xl.sheet_names[0])
-    df    = pd.read_excel(path, sheet_name=sheet, header=None)
-    raw   = [str(s).strip() for s in df.iloc[1, 1:].tolist()]
-    stations = [s for s in raw if _is_valid_station(s)]
+    old_c = ["Avg Weekday OD", "Avg Weekday"]
+    new_c = ["Average Weekday"]
+    sheet = next((s for s in old_c + new_c if s in xl.sheet_names), xl.sheet_names[0])
+    is_new = sheet in new_c and sheet not in old_c
+
+    df = pd.read_excel(path, sheet_name=sheet, header=None)
+
+    # Old format: station codes on row 1; New 2024 format: row 3
+    for station_row in ([3, 1] if is_new else [1, 3]):
+        raw = [str(s).strip() for s in df.iloc[station_row, 1:].tolist()]
+        stations = [s for s in raw if _is_valid_station(s)]
+        if len(stations) > 10:
+            data_start = station_row + 1
+            break
+
     N = len(stations)
     if N == 0:
         raise ValueError(f"No valid stations in {path}. Sample: {raw[:8]}")
-    matrix_raw = df.iloc[2:2+N, 1:1+N]
+
+    matrix_raw = df.iloc[data_start:data_start + N, 1:1 + N]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        matrix = matrix_raw.apply(pd.to_numeric, errors="coerce").fillna(0).values.astype(np.float32)
+        matrix = (matrix_raw.apply(pd.to_numeric, errors="coerce")
+                             .fillna(0).values.astype(np.float32))
+
     if matrix.shape != (N, N):
         raise ValueError(f"Shape mismatch: {matrix.shape} != ({N},{N})")
+
     return stations, matrix
 
 def _load_od_matrices(data_dir, verbose):
