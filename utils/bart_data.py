@@ -1,7 +1,7 @@
 """
 BART data adapter for transfer learning.
-Fully patched version — reads extracted xlsx files directly,
-handles both old and new BART sheet name formats.
+Fixed: station filter now excludes 'Exits'/'Entries' totals row/col,
+       download function actually attempts the download.
 """
 
 import os
@@ -21,30 +21,20 @@ from torch_geometric.data import Data
 BART_GTFS_URL = "https://www.bart.gov/dev/schedules/google_transit.zip"
 DATA_DIR = "data/bart"
 
+# Station codes that are NOT real stations (totals rows/cols in the Excel)
+_NON_STATION_LABELS = {"exits", "entries", "total", "nan", "", "none"}
 
-# ---------------------------------------------------------------------------
-# Download helpers
-# ---------------------------------------------------------------------------
-
-def _ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-
-def _download_file(url: str, dest_path: str, desc: str = ""):
-    if os.path.exists(dest_path):
-        print(f"  [cached] {desc or dest_path}")
-        return True
-    print(f"  [download] {desc or url}")
-    try:
-        r = requests.get(url, timeout=60)
-        r.raise_for_status()
-        with open(dest_path, "wb") as f:
-            f.write(r.content)
-        return True
-    except Exception as e:
-        print(f"  [warning] Could not download {desc}: {e}")
-        return False
-
+# All known BART OD URL patterns (bart.gov uses inconsistent naming)
+_OD_URL_TEMPLATES = [
+    "https://www.bart.gov/sites/default/files/docs/{year}_{month}_average_weekday.xlsx",
+    "https://www.bart.gov/sites/default/files/docs/Ridership_{year}{month}.xlsx",
+    "https://www.bart.gov/sites/default/files/docs/{month_name}_{year}_Ridership_Origin_Destination_Data.xlsx",
+]
+_MONTH_NAMES = {
+    "01": "January", "02": "February", "03": "March", "04": "April",
+    "05": "May",     "06": "June",     "07": "July",  "08": "August",
+    "09": "September","10": "October", "11": "November","12": "December",
+}
 
 MONTHS_TO_FETCH = {
     "before_berryessa": ("2020", "02"),
@@ -56,19 +46,59 @@ MONTHS_TO_FETCH = {
     "baseline_2019_10": ("2019", "10"),
 }
 
+# ---------------------------------------------------------------------------
+# Download helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def _try_download(url: str, dest_path: str) -> bool:
+    """Try to download url → dest_path. Returns True on success."""
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200 and len(r.content) > 1000:
+            with open(dest_path, "wb") as f:
+                f.write(r.content)
+            return True
+    except Exception:
+        pass
+    return False
+
 
 def download_bart_od_matrices(data_dir: str = DATA_DIR) -> dict:
     _ensure_dir(data_dir)
     paths = {}
+
     for label, (year, month) in MONTHS_TO_FETCH.items():
+        # Canonical filename we cache as
         filename = f"{year}_{month}_average_weekday.xlsx"
         dest = os.path.join(data_dir, filename)
+
         if os.path.exists(dest):
             print(f"  [cached] BART OD {year}-{month}")
             paths[label] = dest
-        else:
-            print(f"  [download] BART OD {year}-{month}")
-            print(f"  [warning] Could not download {filename}; will use synthetic fallback for '{label}'")
+            continue
+
+        # Try all known URL patterns
+        downloaded = False
+        for template in _OD_URL_TEMPLATES:
+            url = template.format(
+                year=year, month=month,
+                month_name=_MONTH_NAMES.get(month, month)
+            )
+            if _try_download(url, dest):
+                print(f"  [download] BART OD {year}-{month}")
+                paths[label] = dest
+                downloaded = True
+                break
+
+        if not downloaded:
+            print(f"  [warning] Could not download BART OD {year}-{month} "
+                  f"(bart.gov may block automated requests). "
+                  f"Upload manually to {dest} if needed.")
+
     return paths
 
 
@@ -76,43 +106,88 @@ def download_bart_gtfs(data_dir: str = DATA_DIR) -> str:
     _ensure_dir(data_dir)
     zip_path = os.path.join(data_dir, "google_transit.zip")
     gtfs_dir = os.path.join(data_dir, "gtfs")
-    _download_file(BART_GTFS_URL, zip_path, desc="BART GTFS")
-    if not os.path.exists(gtfs_dir) and os.path.exists(zip_path):
+
+    if not os.path.exists(zip_path):
+        print("  [download] BART GTFS")
+        _try_download(BART_GTFS_URL, zip_path)
+    else:
+        print("  [cached] BART GTFS")
+
+    if os.path.exists(zip_path) and not os.path.exists(gtfs_dir):
         print("  [extract] BART GTFS")
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(gtfs_dir)
+
     return gtfs_dir
 
 
 # ---------------------------------------------------------------------------
-# OD matrix loading — handles both sheet name formats
+# OD matrix loading
 # ---------------------------------------------------------------------------
 
+def _is_valid_station(s: str) -> bool:
+    """Return True if s looks like a real BART station code."""
+    sl = s.lower().strip()
+    if sl in _NON_STATION_LABELS:
+        return False
+    if len(s) > 6 or len(s) == 0:
+        return False
+    if s.startswith("#"):
+        return False
+    # Pure-numeric strings > 4 digits are row numbers, not station codes
+    if s.isdigit() and len(s) > 4:
+        return False
+    return True
+
+
 def _load_od_excel(path: str) -> tuple:
+    """
+    Parse a BART monthly OD Excel file.
+
+    Format (confirmed from real files):
+      Sheet name: 'Avg Weekday OD' (or similar — falls back to first sheet)
+      Row 0: header labels ('Exit stations', 'Entry stations->', 'WEEKDAY', ...)
+      Row 1: col 0 = NaN, cols 1..N = station codes, last col = 'Exits'
+      Rows 2..N+1: col 0 = exit station code, cols 1..N = float OD values,
+                   last col = row total (dropped)
+      Last row: 'Entries' totals row (dropped)
+
+    Returns (stations: list[str], matrix: np.ndarray shape (N, N))
+    """
     xl = pd.ExcelFile(path)
+
+    # Sheet name lookup with fallback to first sheet
     candidates = ["Avg Weekday OD", "Average Weekday", "Avg Weekday"]
-    sheet = next((s for s in candidates if s in xl.sheet_names), None)
-    if sheet is None:
-        raise ValueError(f"No weekday sheet in {path}. Found: {xl.sheet_names}")
+    sheet = next((s for s in candidates if s in xl.sheet_names), xl.sheet_names[0])
 
     df = pd.read_excel(path, sheet_name=sheet, header=None)
 
-    # Row 1 col 1 onward = station codes
+    # Station codes are in row 1, cols 1 onwards
     raw_stations = [str(s).strip() for s in df.iloc[1, 1:].tolist()]
-    stations = [s for s in raw_stations
-                if s not in ("nan", "", "None")
-                and len(s) <= 6
-                and not s.startswith("#")]
+    stations = [s for s in raw_stations if _is_valid_station(s)]
     N = len(stations)
-    if N == 0:
-        raise ValueError(f"No valid stations found in {path}")
 
-    matrix_raw = df.iloc[2:2+N, 1:1+N]
+    if N == 0:
+        raise ValueError(f"No valid stations found in {path}. "
+                         f"Raw row-1 sample: {raw_stations[:8]}")
+
+    # OD data: rows 2..2+N, cols 1..1+N  (excludes Exits totals col)
+    matrix_raw = df.iloc[2:2 + N, 1:1 + N]
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        matrix = matrix_raw.apply(
-            pd.to_numeric, errors="coerce"
-        ).fillna(0).values.astype(np.float32)
+        matrix = (
+            matrix_raw
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0)
+            .values
+            .astype(np.float32)
+        )
+
+    if matrix.shape != (N, N):
+        raise ValueError(
+            f"Matrix shape {matrix.shape} != ({N},{N}) in {path}"
+        )
 
     return stations, matrix
 
@@ -168,14 +243,14 @@ def build_bart_graph(gtfs_dir: str, stations: list) -> dict:
         N = len(stations)
         src, dst = [], []
         for i in range(N):
-            for j in range(i+1, N):
+            for j in range(i + 1, N):
                 src += [i, j]; dst += [j, i]
         return {
-            "edge_index": torch.tensor([src, dst], dtype=torch.long),
-            "edge_attr":  torch.ones(len(src), 2, dtype=torch.float),
-            "station_to_idx": {s: i for i, s in enumerate(stations)},
+            "edge_index":      torch.tensor([src, dst], dtype=torch.long),
+            "edge_attr":       torch.ones(len(src), 2, dtype=torch.float),
+            "station_to_idx":  {s: i for i, s in enumerate(stations)},
             "hyperedge_index": torch.zeros(2, 0, dtype=torch.long),
-            "n_hyperedges": 0,
+            "n_hyperedges":    0,
         }
 
     stop_name_map  = dict(zip(stops_df["stop_id"], stops_df["stop_name"]))
@@ -203,7 +278,7 @@ def build_bart_graph(gtfs_dir: str, stations: list) -> dict:
 
         if trip_id != current_trip:
             current_trip = trip_id
-            prev_idx = node_idx
+            prev_idx     = node_idx
             continue
 
         if prev_idx is not None and node_idx is not None and prev_idx != node_idx:
@@ -228,7 +303,7 @@ def build_bart_graph(gtfs_dir: str, stations: list) -> dict:
         N = len(stations)
         src, dst = [], []
         for i in range(N):
-            for j in range(i+1, N):
+            for j in range(i + 1, N):
                 src += [i, j]; dst += [j, i]
         edge_index = torch.tensor([src, dst], dtype=torch.long)
         edge_attr  = torch.ones(len(src), 2, dtype=torch.float)
@@ -240,9 +315,11 @@ def build_bart_graph(gtfs_dir: str, stations: list) -> dict:
             he_station.append(s_idx)
             he_route.append(r_idx)
 
-    hyperedge_index = torch.tensor(
-        [he_station, he_route], dtype=torch.long
-    ) if he_station else torch.zeros(2, 0, dtype=torch.long)
+    hyperedge_index = (
+        torch.tensor([he_station, he_route], dtype=torch.long)
+        if he_station
+        else torch.zeros(2, 0, dtype=torch.long)
+    )
 
     return {
         "edge_index":      edge_index,
@@ -254,7 +331,7 @@ def build_bart_graph(gtfs_dir: str, stations: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node features
+# Node features  (mirrors utils/data.py od_matrix_to_zone_features)
 # ---------------------------------------------------------------------------
 
 def compute_bart_node_features(od_matrix: np.ndarray) -> np.ndarray:
@@ -290,15 +367,15 @@ def generate_bart_synthetic_scenarios(baseline_matrices, n_synthetic=60, rng_see
     rng = np.random.default_rng(rng_seed)
     scenarios = []
     for _ in range(n_synthetic):
-        base = baseline_matrices[rng.integers(len(baseline_matrices))].copy()
-        N    = base.shape[0]
+        base       = baseline_matrices[rng.integers(len(baseline_matrices))].copy()
+        N          = base.shape[0]
         n_affected = rng.integers(2, max(3, N // 4))
         affected   = rng.choice(N, size=n_affected, replace=False)
         delta      = np.zeros_like(base)
         magnitude  = rng.uniform(0.05, 0.25)
         for s in affected:
-            inflow_delta  = base[:, s] * magnitude * rng.uniform(0.5, 1.5)
-            non_affected  = np.setdiff1d(np.arange(N), affected)
+            inflow_delta = base[:, s] * magnitude * rng.uniform(0.5, 1.5)
+            non_affected = np.setdiff1d(np.arange(N), affected)
             if len(non_affected) > 0:
                 reduction = inflow_delta.sum() * 0.7 / len(non_affected)
                 delta[non_affected, s] -= reduction
@@ -327,7 +404,8 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
             stations, matrix = _load_od_excel(path)
             od_matrices[label] = (stations, matrix)
             if verbose:
-                print(f"  Loaded {label}: {len(stations)} stations")
+                print(f"  Loaded {label}: {len(stations)} stations, "
+                      f"total trips={matrix.sum():.0f}")
         except Exception as e:
             if verbose:
                 print(f"  [warning] Failed to parse {label}: {e}")
@@ -335,15 +413,18 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
     if not od_matrices:
         raise RuntimeError(
             "No BART OD matrices could be loaded. "
-            "Check your internet connection or download them manually from "
-            "https://www.bart.gov/about/reports/ridership"
+            "Check your internet connection or place xlsx files manually in "
+            f"{data_dir}/ named as YYYY_MM_average_weekday.xlsx"
         )
 
-    ref_key      = "after_berryessa" if "after_berryessa" in od_matrices else next(iter(od_matrices))
+    ref_key      = next(
+        (k for k in ["after_berryessa", "before_berryessa"] if k in od_matrices),
+        next(iter(od_matrices))
+    )
     all_stations = od_matrices[ref_key][0]
 
     if verbose:
-        print(f"  Reference station list: {len(all_stations)} stations")
+        print(f"  Reference: '{ref_key}' — {len(all_stations)} stations")
         print("  Building graph from GTFS...")
 
     graph_data = build_bart_graph(gtfs_dir, all_stations)
@@ -355,11 +436,11 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
     def _make_real_scenario(before_label, after_label, scenario_label, split):
         if before_label not in od_matrices or after_label not in od_matrices:
             if verbose:
-                print(f"  [skip] {scenario_label}: missing OD files")
+                print(f"  [skip] {scenario_label}: missing '{before_label}' or '{after_label}'")
             return
-        b_stations, b_matrix = od_matrices[before_label]
-        a_stations, a_matrix = od_matrices[after_label]
-        _, b_aligned, a_aligned = _align_matrices(b_stations, b_matrix, a_stations, a_matrix)
+        b_st, b_mx = od_matrices[before_label]
+        a_st, a_mx = od_matrices[after_label]
+        _, b_aligned, a_aligned = _align_matrices(b_st, b_mx, a_st, a_mx)
         _, b_final, a_final = _align_matrices(
             all_stations, b_aligned, all_stations, a_aligned
         )
@@ -370,29 +451,30 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
             "node_features":       node_features,
             "delta_od":            delta,
             "delta_od_normalized": delta / std,
-            "std":  std,
+            "std":    std,
             "is_real": True,
             "label":   scenario_label,
             "split":   split,
         })
         if verbose:
-            print(f"  Real scenario '{scenario_label}': MAE={np.abs(delta).mean():.2f}, split={split}")
+            print(f"  Real scenario '{scenario_label}': "
+                  f"MAE={np.abs(delta).mean():.2f}, split={split}")
 
     _make_real_scenario("before_berryessa", "after_berryessa",
                         "berryessa_extension_2020", split="val")
     _make_real_scenario("before_antioch",   "after_antioch",
-                        "antioch_extension_2023",  split="train")
+                        "antioch_extension_2023",   split="train")
 
     baseline_matrices = []
     for label in ["baseline_2019_01", "baseline_2019_06", "baseline_2019_10",
                   "before_berryessa"]:
         if label in od_matrices:
             b_st, b_mx = od_matrices[label]
-            _, _, aligned = _align_matrices(
+            _, b_aligned, _ = _align_matrices(
                 b_st, b_mx,
                 all_stations, np.zeros((len(all_stations), len(all_stations)))
             )
-            baseline_matrices.append(aligned)
+            baseline_matrices.append(b_aligned)
 
     if baseline_matrices:
         if verbose:
@@ -407,7 +489,7 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
                 "node_features":       compute_bart_node_features(ref_od),
                 "delta_od":            delta,
                 "delta_od_normalized": delta / std,
-                "std":   std,
+                "std":    std,
                 "is_real": False,
                 "label":   f"synthetic_bart_{i:03d}",
                 "split":   "train",
@@ -418,7 +500,7 @@ def load_bart_transfer_dataset(data_dir=DATA_DIR, n_synthetic=60, verbose=True):
     real_count  = sum(1 for s in scenarios if s["is_real"])
 
     if verbose:
-        print(f"\n  Total scenarios: {len(scenarios)} "
+        print(f"\n  Total: {len(scenarios)} scenarios "
               f"({real_count} real, {len(scenarios)-real_count} synthetic)")
         print(f"  Train: {train_count}  |  Val: {val_count}")
         print("=== BART dataset ready ===\n")
