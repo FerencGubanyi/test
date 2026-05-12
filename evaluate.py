@@ -221,6 +221,8 @@ def evaluate_model(model_type, zone_ids, device, gtfs_features=None):
         model_cpu.H            = model_cpu.H.cpu()
         model_cpu.D_v_inv_sqrt = model_cpu.D_v_inv_sqrt.cpu()
         model_cpu.D_e_inv      = model_cpu.D_e_inv.cpu()
+        if hasattr(model_cpu, 'W') and model_cpu.W is not None:
+            model_cpu.W = model_cpu.W.cpu()
 
     if model_type == 'gat':
         edge_index_cpu = extra['edge_index'].cpu()
@@ -295,7 +297,7 @@ def plot_results(results: list, save_dir: str):
     colors = ['steelblue', 'coral']
 
     # 1. Metric bar chart
-    metrics_to_plot = ['MAE', 'RMSE', 'R2', 'Spearman', 'TopKAcc', 'MoransI']
+    metrics_to_plot = ['MAE', 'RMSE', 'R2', 'Spearman', 'Top20Acc', 'MoransI']
     fig, axes = plt.subplots(1, len(metrics_to_plot),
                               figsize=(4 * len(metrics_to_plot), 5))
     fig.suptitle(

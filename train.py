@@ -444,10 +444,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='BKK OD prediction training')
     parser.add_argument('--model',       type=str,   default='gat',
                         choices=['gat', 'hypergraph'])
-    parser.add_argument('--epochs',      type=int,   default=100)
+    parser.add_argument('--epochs',      type=int,   default=500)
     parser.add_argument('--lr',          type=float, default=1e-3)
-    parser.add_argument('--patience',    type=int,   default=15)
-    parser.add_argument('--real_weight', type=float, default=3.0,
+    parser.add_argument('--patience',    type=int,   default=50)
+    parser.add_argument('--real_weight', type=float, default=5.0,
                         help='Loss multiplier for real VISUM scenarios')
     parser.add_argument('--use_gtfs',    action='store_true', default=True,
                         help='Build 22-dim features using GTFS data')
