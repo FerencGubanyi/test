@@ -47,7 +47,7 @@ except ImportError:
     _HAS_PLOTLY = False
 
 # Add project root to path so model imports work
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 # DB layer
@@ -100,7 +100,7 @@ html, body, [class*="css"] {
 }
 
 /*      hide default streamlit chrome      */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
 .block-container { padding: 1.5rem 2rem 2rem; max-width: 1400px; }
 
 /*      sidebar      */
@@ -313,19 +313,19 @@ def parse_od_excel(file) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
 
 @st.cache_resource(show_spinner=False)
 def load_model(model_type: str, checkpoint_path: str):
-    """Load a trained model checkpoint. Cached across reruns."""
     if not _HAS_TORCH:
         return None
     try:
         if model_type == "GAT+LSTM":
-            from models.gat_lstm import GATLSTMModel
-            model = GATLSTMModel()
+            from models.gat_lstm import GATLSTMModel, Config
+            cfg = Config()
+            model = GATLSTMModel(cfg)
         else:
-            from models.hypergraph_lstm import HypergraphLSTMModel
-            model = HypergraphLSTMModel()
+            from models.hypergraph_lstm import HypergraphLSTMModel, HypergraphConfig
+            cfg = HypergraphConfig()
+            model = HypergraphLSTMModel(cfg)
 
-        state = torch.load(checkpoint_path, map_location="cpu")
-        # Handle both raw state_dict and wrapped checkpoint dicts
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if isinstance(state, dict) and "model_state_dict" in state:
             model.load_state_dict(state["model_state_dict"])
         else:
@@ -338,24 +338,64 @@ def load_model(model_type: str, checkpoint_path: str):
         return None
 
 
-def run_inference(model, od_matrix: np.ndarray, zone_features: np.ndarray) -> np.ndarray:
+def run_inference(model, od_matrix: np.ndarray, zone_features: np.ndarray,
+                  zone_ids_list: list, new_stops: list = None) -> np.ndarray:
     """
-    Run model inference and return ΔOD matrix.
-    Falls back to a synthetic heuristic delta if model is unavailable
-    (demo mode — useful for UI testing without a trained checkpoint).
+    Run model inference and return a ΔOD matrix (N x N).
+
+    Zone features are computed from the OD matrix using od_matrix_to_zone_features.
+    Scenario features are built from new stops placed on the map.
+    Falls back to synthetic demo delta if model is unavailable.
     """
     if model is not None and _HAS_TORCH:
         try:
             import torch
+            from utils.data import od_matrix_to_zone_features, build_scenario_features
+            from models.hypergraph_lstm import HypergraphLSTMModel
+
+            # --- Build proper zone features from OD matrix ---
+            od_df = pd.DataFrame(od_matrix, index=zone_ids_list, columns=zone_ids_list)
+            x = od_matrix_to_zone_features(od_df)   # (N, 22)
+            x_seq = [x]
+
+            # --- Build scenario feature vector from new stops ---
+            if new_stops:
+                affected_zones = list({s["zone_id"] for s in new_stops})
+                num_new_stops  = len(new_stops)
+                scenario_type  = "bus_new"
+            else:
+                affected_zones = []
+                num_new_stops  = 0
+                scenario_type  = "bus_new"
+
+            scenario_feat = build_scenario_features(
+                scenario_type=scenario_type,
+                affected_zones=affected_zones,
+                num_new_stops=num_new_stops,
+            )   # (1, 8)
+
             with torch.no_grad():
-                x = torch.FloatTensor(zone_features).unsqueeze(0)  # (1, N, F)
-                od_t = torch.FloatTensor(od_matrix).unsqueeze(0)   # (1, N, N)
-                delta = model(x, od_t)
-                return delta.squeeze(0).numpy()
+                if isinstance(model, HypergraphLSTMModel):
+                    if model.H is None:
+                        from models.hypergraph_lstm import build_incidence_matrix
+                        H = build_incidence_matrix(zone_ids_list)
+                        model.set_hypergraph(H)
+                    delta_vec = model(x_seq, scenario_feat)          # (1, N)
+                else:
+                    from models.gat_lstm import build_zone_graph
+                    edge_index = build_zone_graph(zone_ids_list)
+                    delta_vec  = model(x_seq, edge_index, scenario_feat)  # (1, N)
+
+            # Convert zone-level vector (N,) → full NxN delta matrix
+            delta_1d = delta_vec.squeeze(0).numpy()
+            delta_2d = np.outer(delta_1d, delta_1d) * 0.01
+            np.fill_diagonal(delta_2d, 0.0)
+            return delta_2d
+
         except Exception as e:
             st.warning(f"Inference error: {e} — showing demo output.")
 
-    #      DEMO MODE      realistic-looking synthetic delta for UI testing
+    # --- Demo fallback ---
     rng = np.random.default_rng(42)
     N = od_matrix.shape[0]
     delta = np.zeros((N, N))
@@ -433,7 +473,7 @@ def build_folium_map(
     if zone_gdf is not None and _HAS_GPD:
         try:
             gdf = zone_gdf.copy()
-            gdf["zone_id"] = gdf["zone_id"].astype(int)
+            gdf["zone_id"] = gdf["NO"].astype(int)
             gdf["delta_net"] = 0.0
             for i, zid in enumerate(zone_ids):
                 mask = gdf["zone_id"] == int(zid)
@@ -442,6 +482,7 @@ def build_folium_map(
             def zone_style(feature):
                 val = feature["properties"].get("delta_net", 0)
                 frac = val / vmax  # [-1, 1]
+                frac = np.sign(frac) * (abs(frac) ** 0.3)  # gamma correction
                 if frac >= 0:
                     r, g, b = 0, int(196 * frac), int(140 * frac)
                     color = f"#{r:02x}{g:02x}{b:02x}"
@@ -569,7 +610,7 @@ with st.sidebar:
 
     default_ckpt = {
         "GAT+LSTM":         str(ROOT / "checkpoints" / "gat_lstm_best.pt"),
-        "Hypergraph+LSTM":  str(ROOT / "checkpoints" / "hypergraph_lstm_best.pt"),
+        "Hypergraph+LSTM":  str(ROOT / "checkpoints" / "hg_lstm_best.pt"),
     }[model_choice]
 
     ckpt_path = st.text_input(
@@ -670,6 +711,10 @@ with col_upload:
         label_visibility="collapsed",
         help="VISUM EFM OD matrix Excel export. Zone IDs must be in row 0, data starts at column 3.",
     )
+    if uploaded_file is not None:
+        st.session_state.uploaded_file = uploaded_file
+    elif "uploaded_file" in st.session_state:
+        uploaded_file = st.session_state.uploaded_file
 
 with col_info:
     st.markdown("""
@@ -700,11 +745,98 @@ if "delta_od" not in st.session_state:
     st.session_state.n_zones = None
     st.session_state.last_run_id = None
 
+if "new_stops" not in st.session_state:
+    st.session_state.new_stops = []   # list of {"name", "lat", "lon", "zone_id"}
 # DB connection (cached for the session)
 if _HAS_DB:
     if "_db" not in st.session_state:
         from db.init_db import get_db
         st.session_state._db = get_db()
+# ─────────────────────────────────────────────
+# STEP 1.5 — Scenario: Add New Stops on Map
+# ─────────────────────────────────────────────
+
+st.markdown('<div class="section-title">Step 1.5 — Define Scenario: Add New Stops</div>',
+            unsafe_allow_html=True)
+
+if not _HAS_FOLIUM:
+    st.info("Install folium + streamlit-folium to use the interactive map.")
+else:
+    st.markdown(
+        "<div class='info-box'>Click the map to place a new stop. "
+        "Fill in the details and click <strong>Add Stop</strong>.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Interactive placement map
+    placement_map = folium.Map(
+        location=[47.497, 19.040],   # Budapest centre
+        zoom_start=12,
+        tiles="CartoDB dark_matter",
+    )
+
+    # Show already-added stops
+    for s in st.session_state.new_stops:
+        folium.Marker(
+            location=[s["lat"], s["lon"]],
+            tooltip=s["name"],
+            icon=folium.Icon(color="green", icon="star"),
+        ).add_to(placement_map)
+
+    map_data = st_folium(
+        placement_map,
+        width="100%",
+        height=380,
+        returned_objects=["last_clicked"],
+        key="placement_map",
+    )
+
+    # If user clicked — show add-stop form
+    clicked = map_data.get("last_clicked") if map_data else None
+    if clicked:
+        lat = round(clicked["lat"], 5)
+        lon = round(clicked["lng"], 5)
+
+        with st.form("add_stop_form", clear_on_submit=True):
+            st.markdown(f"**Clicked location:** {lat}, {lon}")
+            stop_name = st.text_input("Stop name", placeholder="e.g. Boráros tér M")
+            # Zone ID — manual for now, auto-detect when GeoJSON is loaded
+            zone_id_input = st.number_input(
+                "Zone ID (TAZ)",
+                min_value=1, max_value=9999, value=100, step=1,
+                help="The TAZ zone this stop belongs to. "
+                     "Auto-detected when zone GeoJSON is loaded.",
+            )
+            n_routes = st.number_input(
+                "Number of routes serving this stop",
+                min_value=1, max_value=50, value=3, step=1,
+            )
+            submitted = st.form_submit_button("➕ Add Stop")
+
+        if submitted and stop_name:
+            st.session_state.new_stops.append({
+                "name":     stop_name,
+                "lat":      lat,
+                "lon":      lon,
+                "zone_id":  int(zone_id_input),
+                "n_routes": int(n_routes),
+            })
+            st.rerun()
+
+    # Show added stops + option to clear
+    if st.session_state.new_stops:
+        st.markdown("**Stops in this scenario:**")
+        stops_df = pd.DataFrame(st.session_state.new_stops)
+        st.dataframe(stops_df, use_container_width=True, hide_index=True)
+        if st.button("🗑 Clear all stops"):
+            st.session_state.new_stops = []
+            st.rerun()
+    else:
+        st.markdown(
+            "<div style='color:#8B949E; font-size:0.85rem;'>"
+            "No stops added yet — click the map to place one.</div>",
+            unsafe_allow_html=True,
+        )
 
 if run_btn:
     with st.spinner(f"Loading {model_choice} checkpoint..."):
@@ -717,14 +849,17 @@ if run_btn:
     if uploaded_file is not None:
         with st.spinner("Parsing OD matrix..."):
             zone_ids, od_matrix = parse_od_excel(uploaded_file)
+    elif "uploaded_file" in st.session_state and st.session_state.uploaded_file is not None:
+        with st.spinner("Parsing OD matrix..."):
+            zone_ids, od_matrix = parse_od_excel(st.session_state.uploaded_file)
     else:
-        # Demo: generate a small synthetic OD matrix
+    # Demo: match the trained model's zone count (1419)
         rng = np.random.default_rng(0)
-        N_demo = 120
+        N_demo = 1419
         zone_ids = np.arange(1, N_demo + 1)
         od_matrix = rng.exponential(80, (N_demo, N_demo))
         np.fill_diagonal(od_matrix, 0)
-        st.info("No file uploaded — using synthetic demo OD matrix (120 zones).")
+        st.info("No file uploaded — using synthetic demo OD matrix (1419 zones).")
 
     if od_matrix is not None:
         N = od_matrix.shape[0]
@@ -732,11 +867,29 @@ if run_btn:
         zone_features = np.zeros((N, 22))
         zone_features[:, 0] = od_matrix.sum(axis=1)   # total outflow
         zone_features[:, 1] = od_matrix.sum(axis=0)   # total inflow
-
+        # Change the a zone feature based on the new stops
+        if st.session_state.new_stops:
+            for stop in st.session_state.new_stops:
+                z = stop["zone_id"]
+                # zone_ids search
+                matches = np.where(zone_ids == z)[0]
+                if len(matches) == 0:
+                    continue
+                idx = matches[0]
+                # route count feature (index 2 a 22-dim vektorban) increase
+                zone_features[idx, 2] += stop["n_routes"]
+                # stop count feature (index 3) increase
+                zone_features[idx, 3] += 1
         with st.spinner("Running inference..."):
             import time
             t0 = time.perf_counter()
-            delta_od = run_inference(model, od_matrix, zone_features)
+            delta_od = run_inference(
+                model=model,
+                od_matrix=od_matrix,
+                zone_features=zone_features,
+                zone_ids_list=list(zone_ids),
+                new_stops=st.session_state.new_stops,
+            )
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
         st.session_state.delta_od          = delta_od
