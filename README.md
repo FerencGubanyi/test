@@ -89,7 +89,7 @@ Validates the architecture on public traffic data — runs without any BKK data.
 python benchmark_metr_la.py
 ```
 
-### Streamlit Inference App
+### Streamlit Inference App ( just demo purpose, without fully trained models it does not shows valid inforamtions)
 
 ```bash
 streamlit run streamlit.py
